@@ -27,7 +27,7 @@ import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monito
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
+import { withAuthorizedQueuedConversationDelivery } from "./conversation-route-ownership.js";
 import {
   createScheduledGatewayRunner,
   fenceScheduledGatewayContextResolver,
@@ -268,16 +268,12 @@ function startPendingOutboundDeliveryRecovery(params: {
         return await deliverOutboundPayloadsInternal(
           {
             ...deliveryParams,
-            onDeliveryAttempt: async () => {
-              await deliveryParams.onDeliveryAttempt?.();
-              if (!attemptAuthority.routeFingerprint) {
-                return;
-              }
-              await assertQueuedConversationDeliveryAttemptAuthorized(
+            withDirectAdapterHandoff: (initiate) =>
+              withAuthorizedQueuedConversationDelivery(
                 {
                   readCurrentConfig: getRuntimeConfig,
                   operationId: attemptAuthority.operationId,
-                  routeFingerprint: attemptAuthority.routeFingerprint,
+                  routeFingerprint: attemptAuthority.routeFingerprint ?? "",
                 },
                 {
                   agentId: attemptAuthority.agentId,
@@ -287,13 +283,13 @@ function startPendingOutboundDeliveryRecovery(params: {
                     stateContext,
                   ),
                 },
-              );
-            },
+                initiate,
+              ),
           },
           stateContext,
         );
       };
-      logRecovery ??= params.log.child("delivery-recovery");
+      const recoveryLog = (logRecovery ??= params.log.child("delivery-recovery"));
       if (initialPass) {
         const cfg = params.cfg;
         initialPass = false;
@@ -304,30 +300,41 @@ function startPendingOutboundDeliveryRecovery(params: {
           OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
           OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
         } = await import("../infra/outbound/delivery-queue-namespaces.js");
-        const remaining = countPendingDeliveryQueueEntries(
-          [
-            LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
-            OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
-            OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
-          ],
-          undefined,
-          recoveryContext,
-        );
-        if (remaining > 0) {
-          logRecovery.warn(
-            `${remaining} legacy outbound deliveries need repair. Stop the Gateway and run openclaw doctor --fix.`,
+        const diagnoseLegacy = async () => {
+          const remaining = await countPendingDeliveryQueueEntries(
+            [
+              LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
+              OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
+              OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
+            ],
+            undefined,
+            recoveryContext,
           );
+          if (!signal.aborted && remaining > 0) {
+            recoveryLog.warn(
+              `${remaining} legacy outbound deliveries need repair. Stop the Gateway and run openclaw doctor --fix.`,
+            );
+          }
+        };
+        // The diagnostic is independent; both tasks retain admission until they settle.
+        const settled = await Promise.allSettled([
+          diagnoseLegacy(),
+          recoverPendingDeliveries(
+            {
+              deliver: deliverWithCurrentConversationAuthority,
+              log: recoveryLog,
+              cfg,
+              shouldContinue: () => !signal.aborted,
+            },
+            deliverWithCurrentConversationAuthority,
+            recoveryContext,
+          ),
+        ]);
+        for (const result of settled) {
+          if (result.status === "rejected") {
+            params.log.error(`Delivery recovery failed: ${String(result.reason)}`);
+          }
         }
-        await recoverPendingDeliveries(
-          {
-            deliver: deliverWithCurrentConversationAuthority,
-            log: logRecovery,
-            cfg,
-            shouldContinue: () => !signal.aborted,
-          },
-          deliverWithCurrentConversationAuthority,
-          recoveryContext,
-        );
         return;
       }
       // Normal retries use fresh config so revoked accounts cannot inherit the
@@ -337,7 +344,7 @@ function startPendingOutboundDeliveryRecovery(params: {
           drainKey: "gateway:outbound",
           logLabel: "Outbound delivery retry",
           cfg: getRuntimeConfig(),
-          log: logRecovery,
+          log: recoveryLog,
           deliver: deliverWithCurrentConversationAuthority,
           selectEntry: () => ({ match: true, bypassBackoff: false }),
           shouldContinue: () => !signal.aborted,
