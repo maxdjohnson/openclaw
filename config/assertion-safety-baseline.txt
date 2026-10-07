@@ -1816,17 +1816,14 @@ src/commands/doctor-state-integrity.ts	1
 src/commands/doctor-telegram-general-topic-conversations.ts	2
 src/commands/doctor-tools-md-migration.ts	5
 src/commands/doctor-workspace.ts	4
-src/commands/doctor/channel-capabilities.ts	1
 src/commands/doctor/cron/index.ts	3
 src/commands/doctor/cron/legacy-quarantine-migration.ts	1
 src/commands/doctor/cron/legacy-repair.ts	4
 src/commands/doctor/cron/store-migration.ts	2
 src/commands/doctor/cron/warnings.ts	1
 src/commands/doctor/shared/allowfrom-fallback-migration.ts	1
-src/commands/doctor/shared/allowlist-policy-repair.ts	3
 src/commands/doctor/shared/channel-doctor.ts	4
 src/commands/doctor/shared/codex-native-assets.ts	1
-src/commands/doctor/shared/codex-route-compaction-repair.ts	2
 src/commands/doctor/shared/codex-route-session-repair.ts	1
 src/commands/doctor/shared/configured-channel-ids.ts	1
 src/commands/doctor/shared/empty-allowlist-policy.ts	12
@@ -1842,8 +1839,8 @@ src/commands/doctor/shared/legacy-config-state-migration-input.ts	2
 src/commands/doctor/shared/legacy-talk-config-normalizer.ts	1
 src/commands/doctor/shared/open-policy-allowfrom.ts	2
 src/commands/doctor/shared/plugin-tool-allowlist-warnings.ts	1
-src/commands/doctor/shared/stale-agent-model-ref-repair.ts	3
-src/commands/doctor/shared/stale-auth-order-store.ts	3
+src/commands/doctor/shared/stale-agent-model-ref-repair.ts	2
+src/commands/doctor/shared/stale-auth-order-store.ts	2
 src/commands/doctor/shared/stale-auth-order.ts	4
 src/commands/doctor/shared/stale-oauth-profile-shadows.ts	1
 src/commands/doctor/shared/stale-plugin-repair-preservation.ts	1
@@ -2879,7 +2876,7 @@ ui/src/pages/chat/components/session-diff-menus.ts	1
 ui/src/pages/chat/components/session-diff-panel.ts	1
 ui/src/pages/chat/components/widget-card.ts	3
 ui/src/pages/chat/components/widget-export.ts	1
-ui/src/pages/chat/composer-dictation.ts	2
+ui/src/pages/chat/composer-dictation.ts	1
 ui/src/pages/chat/connect-error.ts	1
 ui/src/pages/chat/export.ts	1
 ui/src/pages/chat/input-history.ts	1

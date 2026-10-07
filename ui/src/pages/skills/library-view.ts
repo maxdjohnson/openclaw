@@ -149,6 +149,11 @@ function renderLibraryEditor(library: SkillLibraryController) {
     draft.dirty = true;
     library.changed();
   };
+  const editSlug = (event: Event) => {
+    draft.slug = libraryEventControl(event, HTMLInputElement).value;
+    draft.dirty = true;
+    library.changed();
+  };
   const mutationLocked = disabled || draft.dirty;
   const mutationButton = (action: SkillsLibraryMutateParams["action"], locked = mutationLocked) =>
     html`<button
@@ -209,12 +214,9 @@ function renderLibraryEditor(library: SkillLibraryController) {
             maxlength="63"
             ?disabled=${disabled}
             .value=${live(draft.slug)}
-            @input=${(event: Event) => {
-              draft.slug = libraryEventControl(event, HTMLInputElement).value;
-              draft.dirty = true;
-              library.changed();
-            }}
+            @input=${editSlug}
         /></label>
+
         <div class="plugins-toolbar">
           <label class="field" style="min-width: 0; flex: 1;"
             ><span>${t("skillLibrary.file")}</span
