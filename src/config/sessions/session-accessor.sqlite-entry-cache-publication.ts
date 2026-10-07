@@ -7,15 +7,17 @@ import {
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
-import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { invalidateOpenClawAgentWritableProjections } from "../../state/openclaw-agent-db-lifecycle.js";
 import { invalidateOpenClawAgentReadOnlyProjections } from "../../state/openclaw-agent-db-readonly-scope.js";
 import {
   applyPendingSessionEntryOwnerChanges,
+  isSessionEntryReplacementIdentityCurrent,
   pendingSessionEntryPublications,
+  prepareSessionEntryReplacementChanges,
   preparedSharingReads,
   publishRetainedSessionEntryChange,
+  readCurrentSessionEntryProjection,
   recordCommittedSessionEntryPublication,
   recordCommittedSessionMetadataPublication,
   recordCommittedSessionOwnerPublication,
@@ -39,7 +41,6 @@ import {
   type PendingSessionEntryPublication,
   type PlaceholderReceipt,
   type SessionEntryPublicationRecord,
-  type PreparedSessionEntryChanges,
   type SessionEntryReplacementPublication,
   type SessionEntryCreationOperation,
   type SessionEntryPlaceholder,
@@ -530,20 +531,8 @@ export function retainSessionEntryWorkerPublication(params: {
       const initialization =
         receipt?.kind === "session-transcript-initialized" ? receipt : undefined;
       const current = (sessionKey: string) => !owner.superseded.has(sessionKey);
-      const currentIdentity = (sessionKey: string) => {
-        if (current(sessionKey)) {
-          return true;
-        }
-        const native = owner.superseded.get(sessionKey);
-        const committed = replacement?.current.get(sessionKey);
-        // A later metadata write supersedes sharing facts, but retains this lifecycle transition.
-        return (
-          native !== undefined &&
-          committed !== undefined &&
-          native.sessionId === committed.sessionId &&
-          native.lifecycleRevision === committed.lifecycleRevision
-        );
-      };
+      const currentIdentity = (sessionKey: string) =>
+        isSessionEntryReplacementIdentityCurrent(owner, replacement, sessionKey);
       // A later native metadata write cannot restore membership omitted by an alias move.
       const membershipInvalidated = new Set(
         replacement
@@ -575,38 +564,21 @@ export function retainSessionEntryWorkerPublication(params: {
       const changes: SessionRowChange[] = [];
       const sharingUnchanged = new Set(replacement?.sharingUnchangedKeys);
       const transcriptUnchanged = transcriptVersion === readSessionTranscriptUpdateVersion();
-      const prepared: PreparedSessionEntryChanges | undefined =
-        !unknown && replacement?.source?.identity === params.databaseIdentity
-          ? {
-              source: replacement.source,
-              entries: new Map<string, SessionEntry>(
-                [...replacement.current]
-                  .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
-                  .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
-              ),
-              sharing: new Map(
-                [...replacement.current]
-                  .filter(([key]) => current(key))
-                  .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
-              ),
-              projection:
-                replacement.projection &&
-                new Map(
-                  [...replacement.projection]
-                    .filter(
-                      ([key, facts]) =>
-                        current(key) &&
-                        !owner.metadataSuperseded.has(key) &&
-                        !owner.projectionSuperseded.has(key) &&
-                        (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
-                    )
-                    .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
-                ),
-            }
+      const prepared =
+        !unknown && replacement
+          ? prepareSessionEntryReplacementChanges(
+              owner,
+              replacement,
+              params.databaseIdentity,
+              transcriptUnchanged,
+            )
           : undefined;
       for (const sessionKey of changed) {
         const entry = replacement?.current.get(sessionKey);
         const projection = prepared?.projection?.get(sessionKey);
+        // A later transcript append retires its display watermark, not committed sharing facts.
+        const sharingProjection =
+          prepared && readCurrentSessionEntryProjection(owner, replacement, sessionKey);
         const sharingEntry = entry ? projectSessionSharingEntry(entry) : undefined;
         const placeholder =
           initialization?.sessionKey === sessionKey ? initialization.placeholder : undefined;
@@ -629,7 +601,7 @@ export function retainSessionEntryWorkerPublication(params: {
           }
           recordAcquiringSessionEntry(
             read.acquisition,
-            projection ? sharingEntry : undefined,
+            sharingProjection ? sharingEntry : undefined,
             replacement?.previous.get(sessionKey),
           );
           publishRetainedSessionGeneration(
@@ -642,14 +614,14 @@ export function retainSessionEntryWorkerPublication(params: {
             !unknown && placeholder
               ? { entry: undefined, placeholder, membership: new Set() }
               : !unknown &&
-                  projection &&
+                  sharingProjection &&
                   sharingEntry &&
                   previous?.entry &&
                   previous.entry.sessionId === sharingEntry.sessionId &&
                   previous.entry.lifecycleRevision === sharingEntry.lifecycleRevision
                 ? {
                     entry: sharingEntry,
-                    membership: new Set(projection.membership[2]),
+                    membership: new Set(sharingProjection.membership[2]),
                   }
                 : undefined;
         }

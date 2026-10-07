@@ -96,10 +96,8 @@ export function repairCanonicalSqliteIndexes(
     indexesByTable.set(index.tableName, tableIndexes);
   }
   const repairIndexes = new Set<CanonicalSqliteNamedIndexContract>();
-  // Batch catalog inspection within one snapshot, including absent canonical tables.
+  // One read snapshot also avoids a network lock round trip per metadata query.
   runSqlitePinnedReadSnapshotSync(db, () => {
-    // Preserve catalog authorization even for an empty database.
-    db.prepare("SELECT sql, tbl_name FROM main.sqlite_schema LIMIT 0").all();
     const readTable = createSqliteTableContractReader(db);
     for (const tableName of getCanonicalSqliteTableNames(schemaSql)) {
       assertSqliteIdentifier(tableName);
@@ -114,7 +112,8 @@ export function repairCanonicalSqliteIndexes(
         (index) =>
           index.unique === 1 &&
           index.origin === "c" &&
-          (index.name === null || !canonicalIndexNames.has(index.name)),
+          index.name !== null &&
+          !canonicalIndexNames.has(index.name),
       );
       if (unexpected) {
         throw new Error(

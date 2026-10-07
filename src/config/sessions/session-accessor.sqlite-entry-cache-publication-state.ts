@@ -2,11 +2,13 @@ import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import type {
-  PendingSessionEntryPublication,
-  SessionEntryCacheDatabase,
-  SessionEntryReplacementPublication,
-  SessionSharingEntry,
+import {
+  projectSessionSharingEntry,
+  type PendingSessionEntryPublication,
+  type PreparedSessionEntryChanges,
+  type SessionEntryCacheDatabase,
+  type SessionEntryReplacementPublication,
+  type SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { stageIncognitoSharingPublication } from "./session-accessor.sqlite-incognito-sharing.js";
 import {
@@ -120,6 +122,74 @@ export function recordCommittedSessionOwnerPublication(
       pending.ownerChanges.set(sessionKey, structuredClone(change));
     }
   }
+}
+
+/** Commit receipts remain current only until their stored fields are superseded. */
+export function readCurrentSessionEntryProjection(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication | undefined,
+  sessionKey: string,
+) {
+  return !owner.superseded.has(sessionKey) &&
+    !owner.metadataSuperseded.has(sessionKey) &&
+    !owner.projectionSuperseded.has(sessionKey)
+    ? replacement?.projection?.get(sessionKey)
+    : undefined;
+}
+
+export function isSessionEntryReplacementIdentityCurrent(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication | undefined,
+  sessionKey: string,
+): boolean {
+  if (!owner.superseded.has(sessionKey)) {
+    return true;
+  }
+  const native = owner.superseded.get(sessionKey);
+  const committed = replacement?.current.get(sessionKey);
+  // A later metadata write supersedes sharing facts, but retains this lifecycle transition.
+  return (
+    native !== undefined &&
+    committed !== undefined &&
+    native.sessionId === committed.sessionId &&
+    native.lifecycleRevision === committed.lifecycleRevision
+  );
+}
+
+export function prepareSessionEntryReplacementChanges(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication,
+  databaseIdentity: string,
+  transcriptUnchanged: boolean,
+): PreparedSessionEntryChanges | undefined {
+  if (replacement.source?.identity !== databaseIdentity) {
+    return undefined;
+  }
+  const current = (key: string) => !owner.superseded.has(key);
+  return {
+    source: replacement.source,
+    entries: new Map(
+      [...replacement.current]
+        .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
+        .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
+    ),
+    sharing: new Map(
+      [...replacement.current]
+        .filter(([key]) => current(key))
+        .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
+    ),
+    projection:
+      replacement.projection &&
+      new Map(
+        [...replacement.projection]
+          .filter(
+            ([key, facts]) =>
+              readCurrentSessionEntryProjection(owner, replacement, key) !== undefined &&
+              (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
+          )
+          .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
+      ),
+  };
 }
 
 export function applyPendingSessionEntryOwnerChanges(

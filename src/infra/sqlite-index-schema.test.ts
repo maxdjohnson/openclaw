@@ -34,7 +34,7 @@ function createDatabase(): DatabaseSync {
   return db;
 }
 
-function tracePreparedSql(
+function traceSqlExecutions(
   database: DatabaseSync,
   onIndexSql?: (sql: string) => void,
 ): {
@@ -61,11 +61,21 @@ function tracePreparedSql(
       get(target, property) {
         if (property === "prepare") {
           return (sql: string) => {
-            statements.push(sql);
             return new Proxy(target.prepare(sql), {
               get(statement, method) {
+                if (method === "iterate") {
+                  return function* (...args: Parameters<typeof statement.iterate>) {
+                    const rows = statement.iterate(...args);
+                    statements.push(sql);
+                    for (const row of rows) {
+                      observe(row);
+                      yield row;
+                    }
+                  };
+                }
                 if (method === "get" || method === "all") {
                   return (...args: unknown[]) => {
+                    statements.push(sql);
                     const result = Reflect.apply(statement[method], statement, args);
                     if (method === "all") {
                       for (const row of result) {
@@ -101,7 +111,7 @@ describe("repairCanonicalSqliteIndexes", () => {
     writer.exec(`PRAGMA journal_mode=WAL; ${CANONICAL_SCHEMA}`);
     const reader = new DatabaseSync(filename);
     let droppedIndex: string | undefined;
-    const traced = tracePreparedSql(reader, (sql) => {
+    const traced = traceSqlExecutions(reader, (sql) => {
       if (droppedIndex) {
         return;
       }
@@ -129,7 +139,7 @@ describe("repairCanonicalSqliteIndexes", () => {
   it("runs one whole-file integrity check for healthy indexes", () => {
     const db = createDatabase();
     try {
-      const traced = tracePreparedSql(db);
+      const traced = traceSqlExecutions(db);
 
       verifyAndRepairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA);
 
@@ -144,39 +154,35 @@ describe("repairCanonicalSqliteIndexes", () => {
   it.each([
     ["shared-table fixture", CANONICAL_SCHEMA],
     ["agent schema", OPENCLAW_AGENT_SCHEMA_SQL],
-  ])(
-    "inspects canonical indexes with bounded catalog work without rewriting them: %s",
-    (_name, schema) => {
-      const db = new DatabaseSync(":memory:");
-      try {
-        db.exec(schema);
-        const before = db.prepare("PRAGMA schema_version").get();
-        const indexes = db
-          .prepare("SELECT sql FROM main.sqlite_schema WHERE type = 'index' AND sql IS NOT NULL")
-          .all();
-        const indexSqlBytes = indexes.reduce((sum, row) => {
-          if (typeof row.sql !== "string") {
-            throw new Error("Expected fixture index DDL");
-          }
-          return sum + Buffer.byteLength(row.sql, "utf8");
-        }, 0);
-        const traced = tracePreparedSql(db);
+  ])("inspects canonical indexes with bounded SQL without rewriting them: %s", (_name, schema) => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(schema);
+      const before = db.prepare("PRAGMA schema_version").get();
+      const indexes = db
+        .prepare("SELECT sql FROM main.sqlite_schema WHERE type = 'index' AND sql IS NOT NULL")
+        .all();
+      const indexSqlBytes = indexes.reduce((sum, row) => {
+        if (typeof row.sql !== "string") {
+          throw new Error("Expected fixture index DDL");
+        }
+        return sum + Buffer.byteLength(row.sql, "utf8");
+      }, 0);
+      const traced = traceSqlExecutions(db);
 
-        expect(
-          repairCanonicalSqliteIndexes(traced.database, "test database", schema, {
-            verifyPhysicalIntegrity: false,
-          }),
-        ).toEqual([]);
+      expect(
+        repairCanonicalSqliteIndexes(traced.database, "test database", schema, {
+          verifyPhysicalIntegrity: false,
+        }),
+      ).toEqual([]);
 
-        expect(db.prepare("PRAGMA schema_version").get()).toEqual(before);
-        expect(traced.materializedIndexSqlBytes).toBeLessThanOrEqual(indexSqlBytes);
-        // The catalog snapshot cost stays bounded for both a small fixture and the full agent schema.
-        expect(traced.statements.length).toBeLessThanOrEqual(7);
-      } finally {
-        db.close();
-      }
-    },
-  );
+      expect(db.prepare("PRAGMA schema_version").get()).toEqual(before);
+      expect(traced.materializedIndexSqlBytes).toBeLessThanOrEqual(indexSqlBytes);
+      expect(traced.statements.length).toBeLessThanOrEqual(6);
+    } finally {
+      db.close();
+    }
+  });
 
   it.each([
     [
@@ -202,7 +208,7 @@ describe("repairCanonicalSqliteIndexes", () => {
     try {
       db.exec(`DROP INDEX idx_records_identity; ${driftedSql};`);
 
-      const traced = tracePreparedSql(db);
+      const traced = traceSqlExecutions(db);
       expect(
         repairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA),
       ).toEqual(["idx_records_identity"]);
@@ -506,18 +512,23 @@ describe("repairCanonicalSqliteIndexes", () => {
     }
   });
 
-  it.each(["", "CREATE TEMP VIEW pragma_index_xinfo AS SELECT 1 AS id;"])(
-    "repairs only main with a same-name temporary index and PRAGMA shadow %s",
-    (shadow) => {
+  it.each([false, true])(
+    "repairs only the main schema with a temporary same-name index (shadowed pragmas=%s)",
+    (shadowedPragmas) => {
       const db = createDatabase();
       try {
+        if (shadowedPragmas) {
+          db.exec(`
+            CREATE TEMP TABLE pragma_index_list (synthetic TEXT);
+            CREATE TEMP VIEW pragma_index_xinfo AS SELECT 'synthetic' AS name;
+          `);
+        }
         db.exec(`
-        CREATE TEMP TABLE temp_records (id INTEGER PRIMARY KEY);
-        CREATE UNIQUE INDEX temp.idx_records_identity ON temp_records(id);
-        DROP INDEX main.idx_records_identity;
-        CREATE UNIQUE INDEX main.idx_records_identity ON records(id);
-        ${shadow}
-      `);
+          CREATE TEMP TABLE temp_records (id INTEGER PRIMARY KEY);
+          CREATE UNIQUE INDEX temp.idx_records_identity ON temp_records(id);
+          DROP INDEX main.idx_records_identity;
+          CREATE UNIQUE INDEX main.idx_records_identity ON records(id);
+        `);
 
         repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
 
