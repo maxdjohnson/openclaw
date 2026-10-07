@@ -98,6 +98,12 @@ export function createSessionHistoryWorkerReaders(
       "session Memory capture",
       (value) => value.result,
     ),
+    readBoardSnapshot: reader("board-snapshot", "a Board snapshot", (result) => result.value),
+    readBoardWidgetDocument: reader(
+      "board-widget-document",
+      "a Board document",
+      (result) => result.value,
+    ),
     readBranchSummaries: reader("branch-summaries", "branch summaries", (value) => value.result),
     readMessagePresence: reader(
       "transcript-message-presence",
