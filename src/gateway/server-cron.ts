@@ -1227,7 +1227,6 @@ export function buildGatewayCronService(params: {
         }
       };
       try {
-        assertCurrent();
         const { ok: converged } = await reconcileHeartbeatMonitorJobs({
           cron,
           cfg,

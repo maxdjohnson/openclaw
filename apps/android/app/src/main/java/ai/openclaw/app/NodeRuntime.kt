@@ -378,17 +378,13 @@ internal fun canApproveGatewayDevicePairing(
   val grantedScopes = callerScopes.map(String::trim).filter(String::isNotEmpty).toSet()
   if (OperatorAdminScope in grantedScopes) return true
   if (roles.any { it != "operator" }) return false
-  return scopes.all { scope -> operatorScopeAllowed(scope, grantedScopes) }
-}
-
-private fun operatorScopeAllowed(
-  requestedScope: String,
-  grantedScopes: Set<String>,
-): Boolean =
-  when (requestedScope) {
-    OperatorReadScope -> OperatorReadScope in grantedScopes || OperatorWriteScope in grantedScopes
-    else -> requestedScope in grantedScopes
+  return scopes.all { scope ->
+    when (scope) {
+      OperatorReadScope -> OperatorReadScope in grantedScopes || OperatorWriteScope in grantedScopes
+      else -> scope in grantedScopes
+    }
   }
+}
 
 enum class GatewayDevicePairingAction(
   internal val method: String,
@@ -4738,7 +4734,7 @@ class NodeRuntime internal constructor(
     page =
       GatewayControlPage(
         baseUrl = gatewayControlPageBaseUrl(endpoint),
-        tlsFingerprintSha256 = gatewayControlPageTlsFingerprint(prefs, endpoint),
+        tlsFingerprintSha256 = prefs.loadGatewayTlsFingerprint(endpoint.stableId)?.let(::normalizeGatewayTlsFingerprintInput),
         connectAuth = { nonce, signedAt ->
           withCurrentCredential { credential ->
             buildNativeControlUiConnectAuth(identityStore, client, grantedScopes, credential, nonce, signedAt)
@@ -5868,12 +5864,10 @@ class NodeRuntime internal constructor(
           if (sessionCatalogRefreshSeq.get() == requestSeq) {
             val latest = _sessionCatalogState.value
             val pageMerge =
-              if (page == null) {
-                null
-              } else {
+              page?.let { nextPage ->
                 latest.catalogs
                   .firstOrNull { it.id == normalizedCatalogId }
-                  ?.let { mergeSessionCatalogPage(it, page, cursors) }
+                  ?.let { mergeSessionCatalogPage(it, nextPage, cursors) }
               }
             _sessionCatalogState.value =
               latest.copy(
@@ -5886,15 +5880,13 @@ class NodeRuntime internal constructor(
                     }
                   },
                 loadedPageDepthsByHost =
-                  if (pageMerge == null) {
-                    latest.loadedPageDepthsByHost
-                  } else {
+                  pageMerge?.let {
                     incrementSessionCatalogPageDepths(
                       latest.loadedPageDepthsByHost,
                       normalizedCatalogId,
-                      pageMerge.advancedHostIds,
+                      it.advancedHostIds,
                     )
-                  },
+                  } ?: latest.loadedPageDepthsByHost,
                 loadingMoreCatalogIds = latest.loadingMoreCatalogIds - normalizedCatalogId,
               )
           }
@@ -5990,33 +5982,24 @@ class NodeRuntime internal constructor(
     gatewayScope: GatewayDataScope,
     methodsSnapshot: GatewayMethodsSnapshot,
     publish: () -> Unit,
-  ): Boolean {
-    var approvalPublished = false
-    val scopePublished =
-      publishGatewayData(gatewayScope) {
-        // Lock order stays gateway data -> method catalog -> approval state. The
-        // explicit disconnect path already takes the first two in this order.
-        synchronized(gatewayMethodsLock) {
-          if (methodsSnapshot.epoch == gatewayMethodsEpoch.value) {
-            publish()
-            approvalPublished = true
-          }
-        }
+  ): Boolean =
+    publishGatewayData(gatewayScope) {
+      // Lock order stays gateway data -> method catalog -> approval state. The
+      // explicit disconnect path already takes the first two in this order.
+      synchronized(gatewayMethodsLock) {
+        if (methodsSnapshot.epoch != gatewayMethodsEpoch.value) return false
+        publish()
       }
-    return scopePublished && approvalPublished
-  }
+    }
 
   private inline fun LatestGatewayRefreshGuard.publishGatewayRefresh(
     gatewayScope: GatewayDataScope,
     refreshGeneration: Long,
     crossinline publish: () -> Unit,
-  ): Boolean {
-    var published = false
+  ): Boolean =
     publishGatewayData(gatewayScope) {
-      published = publishIfCurrent(refreshGeneration) { publish() }
+      if (!publishIfCurrent(refreshGeneration) { publish() }) return false
     }
-    return published
-  }
 
   private fun publishAppearancePreferences(
     gatewayScope: GatewayDataScope,
@@ -6569,12 +6552,8 @@ class NodeRuntime internal constructor(
           nextWakeAtMs = statusRoot.long("nextWakeAtMs"),
         )
 
-      var snapshot: List<GatewayCronJobSummary>? = null
-      repeat(CRON_JOBS_SNAPSHOT_MAX_ATTEMPTS) {
-        if (snapshot == null) snapshot = requestCronJobsSnapshot(gatewayScope)
-      }
       val jobs =
-        requireNotNull(snapshot) {
+        requireNotNull((1..CRON_JOBS_SNAPSHOT_MAX_ATTEMPTS).firstNotNullOfOrNull { requestCronJobsSnapshot(gatewayScope) }) {
           "Gateway cron jobs changed repeatedly while loading."
         }
       val sortedJobs =
@@ -6604,13 +6583,9 @@ class NodeRuntime internal constructor(
     val jobs = mutableListOf<GatewayCronJobSummary>()
     val jobIds = mutableSetOf<String>()
     var offset = 0
-    var complete = false
-    var pageCount = 0
     var expectedTotal: Long? = null
     var expectedSnapshotRevision: String? = null
-    var snapshotRevisionSupported: Boolean? = null
-    while (pageCount < CRON_JOBS_MAX_PAGES && !complete) {
-      pageCount += 1
+    repeat(CRON_JOBS_MAX_PAGES) {
       val listParams =
         buildJsonObject {
           put("includeDisabled", JsonPrimitive(true))
@@ -6632,21 +6607,14 @@ class NodeRuntime internal constructor(
         "Gateway returned an invalid cron jobs total."
       }
       if (expectedTotal != null && total != expectedTotal) return null
-      expectedTotal = total
       val snapshotRevision =
         (listRoot?.get("snapshotRevision") as? JsonPrimitive)
           ?.contentOrNull
           ?.trim()
           ?.takeIf { it.isNotEmpty() }
-      val pageSupportsSnapshotRevision = snapshotRevision != null
-      if (
-        snapshotRevisionSupported != null &&
-        snapshotRevisionSupported != pageSupportsSnapshotRevision
-      ) {
-        return null
-      }
-      snapshotRevisionSupported = pageSupportsSnapshotRevision
-      if (expectedSnapshotRevision != null && snapshotRevision != expectedSnapshotRevision) return null
+      // A captured total distinguishes the first page from legacy pages without a revision.
+      if (expectedTotal != null && snapshotRevision != expectedSnapshotRevision) return null
+      expectedTotal = total
       expectedSnapshotRevision = snapshotRevision
       for (job in pageJobs) {
         // Offset pages are separately locked by the Gateway. A mutation between
@@ -6658,16 +6626,13 @@ class NodeRuntime internal constructor(
       require(total >= jobs.size.toLong()) {
         "Gateway returned an invalid cron jobs total."
       }
-      val nextOffset = nextCronJobsPageOffset(listRoot, offset, rawJobs?.size ?: 0)
-      if (nextOffset == null) {
-        complete = true
-        break
-      }
+      val nextOffset =
+        nextCronJobsPageOffset(listRoot, offset, rawJobs?.size ?: 0)
+          ?: return jobs.takeIf { it.size.toLong() == expectedTotal }
       require(nextOffset <= CRON_JOBS_MAX_COUNT) { "Gateway returned too many cron jobs." }
       offset = nextOffset
     }
-    require(complete) { "Gateway returned too many cron job pages." }
-    return jobs.takeIf { it.size.toLong() == expectedTotal }
+    throw IllegalArgumentException("Gateway returned too many cron job pages.")
   }
 
   private suspend fun loadCronJobDetailFromGateway(request: CronJobDetailRequest) {
@@ -7746,14 +7711,9 @@ class NodeRuntime internal constructor(
       markExecApprovalWriteRequestFinished(pendingWrite)
       reconcileExecApprovalWriteOutcome(gatewayScope, pendingWrite)
       throw err
-    } catch (_: GatewayRequestNotEnqueued) {
-      handleExecApprovalResolveFailure(
-        gatewayScope = gatewayScope,
-        pendingWrite = pendingWrite,
-        outcomeUnknown = false,
-      )
-    } catch (err: GatewayRequestRejected) {
+    } catch (err: Throwable) {
       if (
+        err is GatewayRequestRejected &&
         methodsSnapshot.approvalRpcFamily == GatewayApprovalRpcFamily.Legacy &&
         isGatewayExecApprovalAlreadyResolved(err.gatewayError)
       ) {
@@ -7769,25 +7729,14 @@ class NodeRuntime internal constructor(
           reconcileExecApprovalWriteOutcome(gatewayScope, pendingWrite)
         }
       } else {
+        val outcomeUnknown = err !is GatewayRequestDefinitiveFailure && err !is GatewayApprovalRpcUnavailable
         handleExecApprovalResolveFailure(
           gatewayScope = gatewayScope,
           pendingWrite = pendingWrite,
-          outcomeUnknown = false,
+          outcomeUnknown = outcomeUnknown,
         )
+        if (outcomeUnknown) reconcileExecApprovalWriteOutcome(gatewayScope, pendingWrite)
       }
-    } catch (_: GatewayApprovalRpcUnavailable) {
-      handleExecApprovalResolveFailure(
-        gatewayScope = gatewayScope,
-        pendingWrite = pendingWrite,
-        outcomeUnknown = false,
-      )
-    } catch (_: Throwable) {
-      handleExecApprovalResolveFailure(
-        gatewayScope = gatewayScope,
-        pendingWrite = pendingWrite,
-        outcomeUnknown = true,
-      )
-      reconcileExecApprovalWriteOutcome(gatewayScope, pendingWrite)
     }
   }
 
@@ -9038,11 +8987,3 @@ private fun gatewayIdentifierDisplayName(value: String): String =
     .split(' ')
     .filter { it.isNotBlank() }
     .joinToString(" ") { token -> token.replaceFirstChar { it.uppercase() } }
-
-private fun gatewayControlPageTlsFingerprint(
-  prefs: SecurePrefs,
-  endpoint: GatewayEndpoint,
-): String? =
-  prefs
-    .loadGatewayTlsFingerprint(endpoint.stableId)
-    ?.let(::normalizeGatewayTlsFingerprintInput)
