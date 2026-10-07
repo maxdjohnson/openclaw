@@ -3,7 +3,6 @@ import { listAgentIds } from "../agents/agent-scope-config.js";
 import { createSubagentSessionListReadView } from "../agents/subagents/registry/subagent-registry-state.js";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import type { readPreparedSessionEntryChange } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
-import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import {
@@ -191,7 +190,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     // Index updates are synchronous; publish only after the accepted row is installed.
     revisions.replace(previous, row);
   }
-  function acquireEntry(row: records.Row, storedEntry: SessionEntry | undefined) {
+  function acquireEntry(row: records.Row, storedEntry: records.Row["storedEntry"]) {
     if (storedEntry?.archivedAt !== undefined) {
       inOwnerContext(() => metadata.prepare(epoch, cfg, matching, put, referenced));
     }
