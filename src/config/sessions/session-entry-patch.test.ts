@@ -26,6 +26,9 @@ import {
   beginTrajectoryRuntimeRetention,
   prepareTrajectoryRuntimeRetention,
 } from "../../trajectory/runtime-retention.sqlite.js";
+import { buildConversationIdentity } from "./conversation-identity.js";
+import { readConversation, registerConversationAddresses } from "./conversation-registry.js";
+import { resolveConversationRouteFingerprint } from "./conversation-route-fingerprint.js";
 import { resolveSessionLifecycleTimestampsAsync } from "./lifecycle-read.js";
 import { retainPreparedSessionGenerationFacts } from "./session-accessor.sqlite-entry-cache.js";
 import {
@@ -35,6 +38,7 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import {
   patchSessionEntryCore as patchInternalSessionEntry,
+  applySessionEntryOperation,
   replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
 import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
@@ -57,7 +61,11 @@ vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
 }));
 vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMaintenance() {} }));
 
-const delivery = vi.hoisted(() => ({ afterCommit: undefined as (() => void) | undefined }));
+const delivery = vi.hoisted(() => ({
+  afterCommit: undefined as (() => void) | undefined,
+  beforeCommit: undefined as (() => void) | undefined,
+  commands: [] as string[],
+}));
 vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../state/openclaw-agent-execution.js")>();
   return {
@@ -77,6 +85,10 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
             (worker) =>
               operation({
                 execute: async (command, commandOptions) => {
+                  delivery.commands.push(command.type);
+                  if (command.type === "session.entry.patch.commit") {
+                    delivery.beforeCommit?.();
+                  }
                   const result = await worker.execute(command, commandOptions);
                   if (command.type === "session.entry.patch.commit") {
                     delivery.afterCommit?.();
@@ -93,6 +105,8 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
 
 afterEach(() => {
   delivery.afterCommit = undefined;
+  delivery.beforeCommit = undefined;
+  delivery.commands = [];
   vi.restoreAllMocks();
 });
 
@@ -116,6 +130,106 @@ function patchSessionEntryCore(
 ) {
   return patchInternalSessionEntry(scope, update, { workerGuard: {}, ...options });
 }
+
+it("reduces a fixed patch against the current row in one worker request without losing foreign metadata", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const original = f.read()!;
+    delivery.beforeCommit = () => {
+      delivery.beforeCommit = undefined;
+      replaceSessionEntrySync(f.scope, { ...original, compactionCount: 4, label: "foreign edit" });
+    };
+    const published: SessionEntry[] = [];
+    const result = await applySessionEntryOperation(
+      f.scope,
+      {
+        kind: "compaction-accounting",
+        expected: {
+          sessionId: original.sessionId,
+          lifecycleRevision: original.lifecycleRevision,
+          activeWriterRunId: original.activeWriterRunId,
+        },
+        accounting: { amount: 2, tokensAfter: 123 },
+      },
+      { skipMaintenance: true, onCommitted: (entry) => published.push(entry) },
+    );
+    expect(delivery.commands.length).toBeLessThanOrEqual(1);
+    expect(result).toMatchObject({ compactionCount: 6, totalTokens: 123, label: "foreign edit" });
+    expect(f.read()).toEqual(result);
+    expect(published).toEqual([result]);
+
+    const current = f.read()!;
+    for (const expected of [
+      { sessionId: "retired" },
+      { sessionId: current.sessionId, lifecycleRevision: "retired" },
+      { sessionId: current.sessionId, activeWriterRunId: "retired" },
+    ]) {
+      const unchanged = await applySessionEntryOperation(
+        f.scope,
+        { kind: "compaction-accounting", expected, accounting: { amount: 10 } },
+        { skipMaintenance: true, onCommitted: (entry) => published.push(entry) },
+      );
+      expect(unchanged).toEqual(current);
+      expect(f.read()).toEqual(current);
+    }
+    expect(published).toEqual([result]);
+  });
+});
+
+it("rechecks conversation authority before a fixed patch commits", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const identity = buildConversationIdentity({
+      channel: "reef",
+      accountId: "default",
+      kind: "direct",
+      peerId: "patch-peer",
+      deliveryTarget: "user:patch-peer",
+    })!;
+    await registerConversationAddresses(f.scope, [identity]);
+    const conversation = (await readConversation(f.scope, identity.conversationRef))!;
+    const workerGuard = {
+      conversation: {
+        conversationRef: identity.conversationRef,
+        expectedRouteFingerprint: resolveConversationRouteFingerprint(conversation),
+      },
+    };
+    const onCommitted = vi.fn();
+    const accepted = await applySessionEntryOperation(
+      f.scope,
+      { kind: "fields", patch: { label: "authorized" } },
+      { skipMaintenance: true, workerGuard, onCommitted },
+    );
+    expect(accepted).toMatchObject({ label: "authorized" });
+    expect(f.read()).toEqual(accepted);
+    expect(onCommitted).toHaveBeenCalledExactlyOnceWith(accepted);
+    onCommitted.mockClear();
+
+    delivery.beforeCommit = () => {
+      delivery.beforeCommit = undefined;
+      const foreign = new (requireNodeSqlite().DatabaseSync)(f.database.path);
+      try {
+        foreign
+          .prepare("UPDATE conversations SET delivery_target = ? WHERE conversation_id = ?")
+          .run("user:replacement", identity.conversationRef);
+      } finally {
+        foreign.close();
+      }
+    };
+    await expect(
+      applySessionEntryOperation(
+        f.scope,
+        { kind: "fields", patch: { label: "must not persist" } },
+        { skipMaintenance: true, workerGuard, onCommitted },
+      ),
+    ).rejects.toThrow("Conversation is no longer available");
+    expect(f.read()).toEqual(accepted);
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(await readConversation(f.scope, identity.conversationRef)).toMatchObject({
+      target: "user:replacement",
+    });
+  });
+});
 
 it("skips unchanged cold serialization and preserves snapshot bytes and revisions on metadata patches", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -194,9 +308,16 @@ it("skips unchanged cold serialization and preserves snapshot bytes and revision
   });
 });
 
-it.each(["commit", "replacement", "rollback", "foreign"] as const)(
-  "preserves retention facts without reading trajectory rows during a metadata patch (%s)",
-  async (mode) => {
+it.each([
+  { route: "prepared", mode: "commit" },
+  { route: "prepared", mode: "replacement" },
+  { route: "prepared", mode: "rollback" },
+  { route: "prepared", mode: "foreign" },
+  { route: "reducer", mode: "commit" },
+  { route: "reducer", mode: "replacement" },
+] as const)(
+  "preserves retention facts without reading trajectory rows during a metadata patch ($route/$mode)",
+  async ({ route, mode }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = fixture();
       const options = { agentId: f.database.agentId, path: f.database.path };
@@ -239,6 +360,10 @@ it.each(["commit", "replacement", "rollback", "foreign"] as const)(
       const counter = trackSqliteStatementExecutions(f.database.db, ["trajectory"], (sql) =>
         /^select\b/i.test(sql) && sql.includes('"trajectory_runtime_events"') ? "trajectory" : null,
       );
+      const metadata = {
+        label: "metadata committed",
+        ...(mode === "replacement" ? { sessionId: "replacement" } : {}),
+      };
       const { port1, port2 } = new MessageChannel();
       try {
         const patch = () =>
@@ -246,14 +371,10 @@ it.each(["commit", "replacement", "rollback", "foreign"] as const)(
             commitSessionEntryPatch(
               {
                 selection: { kind: "entry", sessionKey: f.scope.sessionKey, exact: false },
-                prepared,
                 sessionKey: f.scope.sessionKey,
-                writeBase,
-                next: {
-                  ...writeBase,
-                  label: "metadata committed",
-                  ...(mode === "replacement" ? { sessionId: "replacement" } : {}),
-                },
+                ...(route === "reducer"
+                  ? { operation: { kind: "fields" as const, patch: metadata } }
+                  : { prepared, writeBase, next: { ...writeBase, ...metadata } }),
                 operationLabel: "session-entry.patch",
                 validateCanonicalKeys: false,
               },
