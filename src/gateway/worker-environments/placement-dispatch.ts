@@ -1,4 +1,8 @@
 import { getRuntimeConfig } from "../../config/config.js";
+import {
+  assertRequiredWorkerDispatch,
+  RequiredWorkerProfileError,
+} from "../../config/required-worker-profile.js";
 import { resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import type { WorkerNodePlacementAuthority } from "./device-placement-eligibility.js";
 import { composePlacementAuthorization } from "./placement-authorization.js";
@@ -56,6 +60,7 @@ type WorkerLocalDispatchBarrier = (params: {
   agentId: string;
   executionMode: WorkerPlacementDispatchRequest["executionMode"];
   authorize?: WorkerPlacementAuthorization;
+  requiredProfile?: string;
   signal?: AbortSignal;
   startDispatch: () => Promise<WorkerDispatchPlacement>;
 }) => Promise<WorkerDispatchPlacement>;
@@ -113,7 +118,9 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
   ): Promise<WorkerActiveDispatchPlacement> => {
     const assertCurrent = composePlacementAuthorization(authorize, () => {
       signal?.throwIfAborted();
+      assertRequiredWorkerDispatch(getRuntimeConfig(), request);
     });
+    assertCurrent();
     let placement: WorkerDispatchPlacement | undefined;
     try {
       signal?.throwIfAborted();
@@ -123,6 +130,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
         agentId: request.agentId,
         executionMode: request.executionMode,
         authorize: assertCurrent,
+        requiredProfile: request.requiredProfile,
         signal,
         startDispatch: async () => {
           placement = await placements.startDispatch(
@@ -141,6 +149,9 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
           return placement;
         },
       });
+      // The requested transition can acknowledge a detached caller while setup continues.
+      // Revalidate that retained caller before any node or provider-side preparation.
+      assertCurrent();
       if (
         !request.deviceId &&
         request.devicePlacement?.requiredNodeCommands.length &&
@@ -177,6 +188,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       const projectPath = workspace.kind === "local" ? workspace.path : undefined;
       // Workspace preparation yields; fence the current paired node again before durable provision.
       await startup.validateDevicePlacement(request);
+      assertCurrent();
       const preparedIntent = !request.deviceId
         ? await environments.prepareProjectIntent(request.profileId, {
             machineClass: request.machineClass,
@@ -419,6 +431,11 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
     onTransition?: (placement: WorkerDispatchPlacement) => void,
   ): Promise<WorkerReclaimPlacement> => {
     const assertGatewayRecoverySource = () => {
+      if (request.recoverToGateway && getRuntimeConfig().cloudWorkers?.requiredProfile) {
+        throw new RequiredWorkerProfileError(
+          "Gateway recovery is disabled by the required worker profile policy; Stop retains the workspace for remote recovery.",
+        );
+      }
       if (!request.recoverToGateway) {
         return;
       }
@@ -510,7 +527,30 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
         ]),
       ];
     },
-    move: moveService.move,
+    move: async (
+      request: WorkerPlacementMoveRequest,
+      onTransition?: (placement: WorkerDispatchPlacement) => void,
+      authorize?: WorkerPlacementAuthorization,
+      signal?: AbortSignal,
+    ) => {
+      const assertCurrent = composePlacementAuthorization(authorize, () => {
+        signal?.throwIfAborted();
+        const required = getRuntimeConfig().cloudWorkers?.requiredProfile;
+        if (
+          required &&
+          (request.target.kind !== "profile" ||
+            request.target.profileId !== required ||
+            request.target.machineClass !== undefined ||
+            request.target.os !== undefined)
+        ) {
+          throw new RequiredWorkerProfileError(
+            "Session placement changes are disabled by the required worker profile policy.",
+          );
+        }
+      });
+      assertCurrent();
+      return await moveService.move(request, onTransition, assertCurrent, signal);
+    },
     reclaim,
     reconcile: recovery.reconcile,
     reconcileActive: recovery.reconcileActive,
