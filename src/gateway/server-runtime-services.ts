@@ -60,6 +60,7 @@ type StartupMaintenanceParams = Parameters<
 type GatewayStartupMaintenance = {
   startupSessionDatabases: StartupMaintenanceParams["databases"];
   pluginRuntime: { registry: ReturnType<StartupMaintenanceParams["getPluginRegistry"]> };
+  pluginMetadataSnapshot?: StartupMaintenanceParams["pluginMetadataSnapshot"];
   startupTrace?: StartupMaintenanceParams["startupTrace"];
 };
 type GatewayPostReadyLogger = StartupMaintenanceParams["log"];
@@ -170,6 +171,7 @@ export function scheduleGatewayPostReadyMaintenance(params: {
                 await runGatewayPostReadyStartupMaintenance({
                   getConfig: getRuntimeConfig,
                   getPluginRegistry: () => params.startupMaintenance.pluginRuntime.registry,
+                  pluginMetadataSnapshot: params.startupMaintenance.pluginMetadataSnapshot,
                   databases: params.startupMaintenance.startupSessionDatabases,
                   startupTrace: params.startupMaintenance.startupTrace,
                   signal: params.signal,
