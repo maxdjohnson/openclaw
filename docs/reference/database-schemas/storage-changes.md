@@ -2345,8 +2345,10 @@ in bounded batches; selection and sorting run before the deletion transaction.
 
 The retention owner holds mutation receipts only for the active sweep. Committed
 appends publish their retained session's run summaries, including per-session trims.
-Session metadata patches publish through the same receipt after all patch-owned
-writes, so bookkeeping does not force another snapshot of unchanged trajectory rows.
+Session metadata patches advance only the receipt's committed mutation counter
+after all patch-owned writes. They preserve trajectory rows and reuse the sweep's
+prepared run summaries without another aggregate. Foreign-commit and lease checks
+still apply before accepting that metadata-only receipt.
 The owner replaces affected snapshot sessions with these receipts, so writes that
 overlap snapshot creation are neither lost nor counted twice. Its byte and expiry
 facts settle each batch without waiting for a write-free read. No receipts are

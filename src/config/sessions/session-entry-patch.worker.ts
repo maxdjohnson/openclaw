@@ -2,7 +2,7 @@ import { deferSqliteWorkerCommitReceipt } from "../../infra/sqlite-worker-operat
 import { createSqliteWorkerTransferOwner } from "../../infra/sqlite-worker-transfer.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
-import { captureTrajectoryRuntimeRetentionMutation } from "../../trajectory/runtime-retention.sqlite.js";
+import { captureTrajectoryRuntimeRetentionMetadataMutation } from "../../trajectory/runtime-retention.sqlite.js";
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
 import {
   readLifecycleTargetSnapshot,
@@ -38,7 +38,7 @@ export function commitSessionEntryPatch(
       result = { kind: "session-entry-patch", entry: null };
     } else {
       const publishRetention = input.next
-        ? captureTrajectoryRuntimeRetentionMutation(database.db)
+        ? captureTrajectoryRuntimeRetentionMetadataMutation(database.db)
         : undefined;
       const mutation = applySessionEntryPatchInDatabase(database, {
         ...input,
@@ -70,7 +70,7 @@ export function commitSessionEntryPatch(
           )
         : undefined;
       // Publish after every patch-owned write, including commit-receipt preparation.
-      publishRetention?.(mutation.entry.sessionId);
+      publishRetention?.();
       result = { kind: "session-entry-patch", entry: mutation.entry, publication };
     }
     return transferSessionEntryWorkerCandidate(database, admit, result);
