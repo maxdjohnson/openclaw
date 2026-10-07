@@ -10,6 +10,7 @@ import {
 import { resolveSessionPublicShare } from "../config/sessions/session-public-share.js";
 import * as historyReaders from "../config/sessions/session-transcript-worker-readers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
@@ -207,6 +208,12 @@ describe("anonymous published session reader", () => {
               { workerGuard: {} },
             );
             if (holdMembership) {
+              // Complete metadata receipts stay ready; explicit invalidation requires reconciliation.
+              sessionChanges.emit({
+                agentId: locator.agentId,
+                sessionKey: locator.sessionKey,
+                factsInvalidated: "category",
+              });
               // Hold the real worker result before the projection accepts it.
               await withinTest(membershipRead.promise, signal);
               expect(

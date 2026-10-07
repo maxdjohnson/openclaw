@@ -2515,7 +2515,7 @@ A candidate replacement is a cross-connection mutation generation published by
 the writer owner after synchronous SDK writers retire at the next SDK major.
 It must cover every supported writer before replacing live authority reads.
 
-Raw and visible transcript deltas, pre-reset Memory capture, and final context
+Raw and visible transcript deltas, watermarks, pre-reset Memory capture, and final context
 validation borrow an already-prepared agent executor when one exists for the
 captured physical store. The reader captures its generation before yielding and
 joins the existing writer FIFO; replacement or retirement refuses the read instead

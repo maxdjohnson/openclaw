@@ -21,6 +21,7 @@ export type PreparedSessionTranscriptReads = Pick<
   | "readSessionMemoryCapture"
   | "readColdMetadata"
   | "readAnchors"
+  | "readWatermark"
 >;
 
 /** A prepared writer lends its connection for reads; this never prepares a replacement writer. */
@@ -88,6 +89,13 @@ export function createPreparedSessionTranscriptReads(params: {
     );
   };
   return {
+    readWatermark: (input) =>
+      read((worker) =>
+        worker.execute({
+          type: "session.transcript.watermark.read",
+          input: { ...input, expectedIdentity },
+        }),
+      ),
     readRawDelta: (input, signal) =>
       read(
         (worker) =>

@@ -398,6 +398,7 @@ function openAgentDatabaseBackend(
     "session.archives.recordPublication": loadAgentArchiveOperations,
     "session.transcript.initialize": loadAgentTranscriptOperations,
     "session.transcript.rawDelta.read": loadAgentTranscriptReadOperations,
+    "session.transcript.watermark.read": loadAgentTranscriptReadOperations,
     "session.transcript.visibleDelta.read": loadAgentTranscriptReadOperations,
     "session.transcript.memoryCapture.read": loadAgentTranscriptReadOperations,
     "session.transcript.anchors.read": loadAgentTranscriptReadOperations,

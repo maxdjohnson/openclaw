@@ -4,6 +4,7 @@ import type {
   SessionMemoryCaptureWorkerInput,
   SessionTranscriptAnchorsWorkerInput,
   SessionTranscriptDeltaWorkerInput,
+  SessionTranscriptWatermarkWorkerInput,
 } from "./session-transcript-worker-read.types.js";
 
 type CapturedRead<Input> = Omit<Input, "kind" | "database" | "expectedIdentity"> & {
@@ -21,5 +22,6 @@ export type SessionTranscriptExecutionReadInputs = {
   >;
   memory: CapturedRead<SessionMemoryCaptureWorkerInput>;
   anchors: CapturedRead<SessionTranscriptAnchorsWorkerInput>;
+  watermark: CapturedRead<SessionTranscriptWatermarkWorkerInput>;
   cold: { sessionId: string; expectedIdentity: DatabaseFileIdentity };
 };

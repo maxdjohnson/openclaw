@@ -76,20 +76,33 @@ export async function loadAgentTranscriptOperations() {
 }
 
 export async function loadAgentTranscriptReadOperations() {
-  const [raw, visible, memory, anchors, cold, fence, identity, reader, scopes, agents, errors] =
-    await Promise.all([
-      import("../config/sessions/session-accessor.sqlite-delta.js"),
-      import("../config/sessions/session-accessor.sqlite-active-events.js"),
-      import("../hooks/bundled/session-memory/capture.worker.js"),
-      import("../config/sessions/session-transcript-anchor-read.kernel.js"),
-      import("../config/sessions/session-cold-storage-state.js"),
-      import("../config/sessions/session-transcript-read-fence.js"),
-      import("../infra/sqlite-worker-identity.js"),
-      import("./openclaw-agent-db-readonly-open.js"),
-      import("../config/sessions/session-accessor.sqlite-scope-helpers.js"),
-      import("@openclaw/normalization-core/agent-id"),
-      import("../config/sessions/session-history-worker-errors.js"),
-    ]);
+  const [
+    raw,
+    visible,
+    memory,
+    anchors,
+    cold,
+    fence,
+    identity,
+    reader,
+    scopes,
+    agents,
+    errors,
+    watermark,
+  ] = await Promise.all([
+    import("../config/sessions/session-accessor.sqlite-delta.js"),
+    import("../config/sessions/session-accessor.sqlite-active-events.js"),
+    import("../hooks/bundled/session-memory/capture.worker.js"),
+    import("../config/sessions/session-transcript-anchor-read.kernel.js"),
+    import("../config/sessions/session-cold-storage-state.js"),
+    import("../config/sessions/session-transcript-read-fence.js"),
+    import("../infra/sqlite-worker-identity.js"),
+    import("./openclaw-agent-db-readonly-open.js"),
+    import("../config/sessions/session-accessor.sqlite-scope-helpers.js"),
+    import("@openclaw/normalization-core/agent-id"),
+    import("../config/sessions/session-history-worker-errors.js"),
+    import("../config/sessions/session-accessor.sqlite-transcript-watermark.js"),
+  ]);
   const readResult = <T>(read: () => T): SessionTranscriptExecutionReadResult<T> => {
     try {
       return { ok: true, value: read() };
@@ -115,6 +128,13 @@ export async function loadAgentTranscriptReadOperations() {
       input.expectedIdentity.key,
       input.expectedIdentity.birthtime,
     );
+    if (input.scope) {
+      identity.assertExistingDatabaseIdentity(
+        input.scope.storePath ?? database.path,
+        input.expectedIdentity.key,
+        input.expectedIdentity.birthtime,
+      );
+    }
     if (input.resolved) {
       if ((input.resolved.databaseAgentId ?? input.resolved.agentId) !== database.agentId) {
         throw new Error("Prepared transcript read belongs to another agent database");
@@ -136,11 +156,6 @@ export async function loadAgentTranscriptReadOperations() {
         ) {
           throw new Error("Prepared transcript read changed its captured session scope");
         }
-        identity.assertExistingDatabaseIdentity(
-          scope.storePath ?? database.path,
-          input.expectedIdentity.key,
-          input.expectedIdentity.birthtime,
-        );
       }
     }
     return database;
@@ -158,6 +173,14 @@ export async function loadAgentTranscriptReadOperations() {
     return reader.readOpenClawAgentDatabaseSnapshot(database, () => read(database));
   };
   return {
+    "session.transcript.watermark.read": (
+      input: SessionTranscriptExecutionReadInputs["watermark"],
+      context,
+    ) =>
+      readResult(() => {
+        open(input, context);
+        return watermark.readSessionTranscriptWatermark(input.scope);
+      }),
     "session.transcript.rawDelta.read": (
       input: SessionTranscriptExecutionReadInputs["raw"],
       context,

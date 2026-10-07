@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   appendTranscriptEvent,
@@ -21,6 +22,7 @@ import {
   recordOpenClawAgentDatabaseOpenFailure,
   clearOpenClawAgentDatabaseOpenFailure,
 } from "../../state/openclaw-agent-db.js";
+import * as agentWriteAdmission from "../../state/openclaw-agent-write-admission.js";
 import {
   recordOpenClawDatabaseQuarantine,
   clearOpenClawDatabaseQuarantine,
@@ -51,6 +53,52 @@ function createRecorder(target: ReturnType<typeof targetIn>, text: string, times
     updateMode: "none",
   });
 }
+
+it("reads CLI presence after an earlier admitted transcript write settles", async ({ signal }) => {
+  await withOpenClawTestState({ label: "cli-presence-admission" }, async ({ stateDir }) => {
+    const target = targetIn(stateDir);
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const entered = createDeferredCore();
+    const resume = createDeferredCore();
+    const queued = createDeferredCore();
+    const admit = agentWriteAdmission.runOpenClawAgentWriteAdmission;
+    const writing = admit({ agentId: target.agentId, path: target.storePath }, async () => {
+      entered.resolve();
+      await withinTest(resume.promise, signal);
+      await createRecorder(target, "Earlier admitted user turn").persistApproved();
+    });
+    let reading: Promise<boolean> | undefined;
+    let restore = () => {};
+    try {
+      await withinTest(entered.promise, signal);
+      const admission = vi
+        .spyOn(agentWriteAdmission, "runOpenClawAgentWriteAdmission")
+        .mockImplementation((...args) => {
+          const pending = admit(...args);
+          queued.resolve();
+          return pending;
+        });
+      restore = () => admission.mockRestore();
+      reading = hasCliSessionTranscript({ sessionTarget: target });
+      await withinTest(
+        awaitGateBeforeSettlement(
+          queued.promise,
+          reading,
+          "CLI presence bypassed the earlier admitted writer",
+        ),
+        signal,
+      );
+      restore();
+      resume.resolve();
+      await withinTest(writing, signal);
+      await expect(reading).resolves.toBe(true);
+    } finally {
+      restore();
+      resume.resolve();
+      await Promise.allSettled([reading, writing]);
+    }
+  });
+});
 
 it("leaves cold CLI history absent until the approved user-turn writer creates it", async () => {
   await withOpenClawTestState({ label: "cli-cold-history" }, async ({ stateDir }) => {
