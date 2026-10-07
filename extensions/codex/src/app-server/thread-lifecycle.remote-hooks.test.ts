@@ -16,7 +16,7 @@ import {
 } from "./run-attempt-test-harness.js";
 import {
   createAppServerOptions,
-  startOrResumeAttemptThread,
+  startOrResumeAttemptThreadWithoutSkills,
 } from "./thread-lifecycle.test-fixtures.js";
 
 setupRunAttemptTestHooks();
@@ -101,7 +101,7 @@ describe("Codex remote native hook credential lifecycle", () => {
         },
       };
       try {
-        const first = await startOrResumeAttemptThread(common);
+        const first = await startOrResumeAttemptThreadWithoutSkills(common);
         const installedPath = projection!.path;
         expect(
           JSON.stringify(
@@ -118,7 +118,7 @@ describe("Codex remote native hook credential lifecycle", () => {
             first.liveThreadEphemeralPolicy,
           ),
         ).resolves.toBe(true);
-        const second = await startOrResumeAttemptThread(common);
+        const second = await startOrResumeAttemptThreadWithoutSkills(common);
         expect(second.threadId).toBe(first.threadId);
         expect(
           fake.request.mock.calls.filter(([method]) => method === "thread/resume"),

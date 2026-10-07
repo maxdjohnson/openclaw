@@ -284,7 +284,7 @@ export function createCodexNativeHookRelay(params: {
               if (params.nativeModelAdmission && toolName && modelInputTools.includes(toolName)) {
                 const admission = params.nativeModelAdmission;
                 if (toolName.endsWith("spawn_agent")) {
-                  const assertSpawnAllowed = () => {
+                  return () => {
                     assertAdmissionCurrent();
                     // An admitted child's inherited relay has its own source custody.
                     if (!readCodexNativeChildThreadId(payload)) {
@@ -296,7 +296,6 @@ export function createCodexNativeHookRelay(params: {
                     }
                     return undefined;
                   };
-                  return assertSpawnAllowed;
                 }
                 const input = isJsonObject(payload) ? payload.tool_input : undefined;
                 const targetThreadId =
@@ -453,14 +452,13 @@ export function createCodexNativeHookRelay(params: {
       void remoteCredential.dispose();
     }
   }
-  const unregister = () => {
-    foregroundClosed = true;
-    rejectPendingAdmissions("native hook relay foreground closed");
-    relay.unregister();
-  };
   return {
     ...relay,
-    unregister,
+    unregister: () => {
+      foregroundClosed = true;
+      rejectPendingAdmissions("native hook relay foreground closed");
+      relay.unregister();
+    },
     prepareInvocation: async () => {
       await relay.prepareInvocation();
       await remoteCredential?.prepare();
@@ -489,11 +487,7 @@ export function createCodexNativeHookRelay(params: {
     },
     claimDirectChild: (threadIdInput) => {
       const threadId = threadIdInput.trim();
-      if (!threadId) {
-        return () => undefined;
-      }
-      const existingClaim = directChildClaims.get(threadId);
-      if (existingClaim) {
+      if (!threadId || directChildClaims.has(threadId)) {
         return () => undefined;
       }
       const claim = Symbol(threadId);
@@ -501,12 +495,7 @@ export function createCodexNativeHookRelay(params: {
       const pending = pendingDirectChildAdmissions.get(threadId);
       pendingDirectChildAdmissions.delete(threadId);
       pending?.resolve(claim);
-      let released = false;
       return () => {
-        if (released) {
-          return;
-        }
-        released = true;
         if (directChildClaims.get(threadId) !== claim) {
           return;
         }

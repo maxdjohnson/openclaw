@@ -559,9 +559,9 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   };
   const startupTimeoutMs = resolveCodexStartupTimeoutMs({
     timeoutMs: params.timeoutMs,
+    requestTimeoutMs: appServer.requestTimeoutMs,
     timeoutFloorMs: options.startupTimeoutFloorMs,
   });
-  const requesterChannel = params.messageChannel ?? params.messageProvider;
   const requester = buildCodexHookRequester(params);
   const buildNativeHookRelayFinalConfigPatch = async (
     decision: CodexThreadFinalConfigPatchDecision,
@@ -611,7 +611,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       approvalContext: {
         trigger: params.trigger,
         approvalReviewerDeviceId: params.approvalReviewerDeviceId,
-        turnSourceChannel: requesterChannel,
+        turnSourceChannel: params.messageChannel ?? params.messageProvider,
         turnSourceTo: params.currentMessagingTarget ?? params.currentChannelId,
         turnSourceAccountId: params.agentAccountId,
         turnSourceThreadId: params.currentThreadTs,
