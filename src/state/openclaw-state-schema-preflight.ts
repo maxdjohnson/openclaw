@@ -28,6 +28,7 @@ import {
   readStateSchemaMigrationVersion,
   STATE_SCHEMA_MIGRATION_CONTRACT_SQLS,
 } from "./openclaw-state-db-schema-version.js";
+import { inspectOpenClawStateOwnershipFromDatabase } from "./openclaw-state-ownership.js";
 import { inspectCurrentStateStartupSchema } from "./openclaw-state-schema-inspection.js";
 import { readStateSchemaPublicationBlocker } from "./openclaw-state-schema-publication.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
@@ -106,6 +107,8 @@ export function inspectStateDatabaseSchema(
     if (input.requireStartupMigrationReadiness && contentVersion <= OPENCLAW_STATE_SCHEMA_VERSION) {
       assertSqliteIntegrity(database, pathname);
       assertCanonicalStateSchemaShape(database, pathname);
+      // Readiness must reject malformed ownership even when startup has no pending writes.
+      inspectOpenClawStateOwnershipFromDatabase(database, pathname);
       if (migrationVersion === OPENCLAW_STATE_SCHEMA_VERSION) {
         const { blockingIssues } = inspectCurrentStateStartupSchema(
           database,
