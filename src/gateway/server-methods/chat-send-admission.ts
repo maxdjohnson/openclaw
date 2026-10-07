@@ -100,11 +100,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   } = session;
   const cachedMeta = { cached: true, runId: clientRunId };
   const assertSessionTargetCurrent = session.assertSessionTargetCurrent;
-  const { chatSendTraceAttributes, originatingRoute } = prepareChatSendAdmissionContext({
-    request,
-    session,
-    client,
-  });
+  const { chatSendTraceAttributes, originatingRoute } = prepareChatSendAdmissionContext(params);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const pendingAttemptId = randomUUID();
   const pendingReservation = createPendingChatSendReservationAccess({
