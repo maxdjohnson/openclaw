@@ -110,7 +110,7 @@ describe("skills.workshop gateway methods", () => {
     const archived = await call("skills.workshop.archive", { name: "deploy-notes", reason: "dup" });
     const restored = await call("skills.workshop.restore", { name: "deploy-notes" });
 
-    const ctx = { config, agentId: "ops", actor: "user" };
+    const ctx = { config, agentId: "ops", actor: "user", assertLive: expect.any(Function) };
     expect(archived.response).toEqual({ change });
     expect(library.archiveWorkshopSkill).toHaveBeenCalledWith(ctx, {
       name: "deploy-notes",
@@ -122,6 +122,33 @@ describe("skills.workshop gateway methods", () => {
       versionId: undefined,
     });
   });
+
+  it.each(["skills.workshop.archive", "skills.workshop.restore"])(
+    "refuses %s once the requester loses authority after admission",
+    async (method) => {
+      const client = { invalidated: false };
+      // The library calls assertLive right before its final file effect.
+      const revokeThenCommit = async (ctx: { assertLive: () => void }) => {
+        client.invalidated = true;
+        ctx.assertLive();
+        return change;
+      };
+      library.archiveWorkshopSkill.mockImplementation(revokeThenCommit);
+      library.restoreWorkshopSkill.mockImplementation(revokeThenCommit);
+
+      await expect(
+        callGatewayHandler(
+          skillsWorkshopHandlers,
+          method,
+          { name: "deploy-notes" },
+          {
+            client: client as never,
+            context,
+          },
+        ),
+      ).rejects.toThrow("Gateway requester authority changed");
+    },
+  );
 
   it("returns library refusals and unknown agents as invalid requests", async () => {
     library.archiveWorkshopSkill.mockRejectedValue(
