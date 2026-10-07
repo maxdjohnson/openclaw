@@ -32,15 +32,11 @@ function parseLearnRequest(raw: string): string | null {
 
 /** /learn needs a harness that exposes OpenClaw tools and a policy that allows skill_workshop. */
 function isWorkshopAvailable(params: HandleCommandsParams): boolean {
-  if (params.opts?.disableTools) {
-    return false;
-  }
-  if (params.opts?.toolsAllow?.length === 0) {
-    return false;
-  }
   if (
-    params.opts?.toolsAllow !== undefined &&
-    !isToolAllowedByPolicyName(SKILL_WORKSHOP_TOOL_NAME, { allow: params.opts.toolsAllow })
+    params.opts?.disableTools ||
+    params.opts?.toolsAllow?.length === 0 ||
+    (params.opts?.toolsAllow !== undefined &&
+      !isToolAllowedByPolicyName(SKILL_WORKSHOP_TOOL_NAME, { allow: params.opts.toolsAllow }))
   ) {
     return false;
   }
