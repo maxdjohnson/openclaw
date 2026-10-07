@@ -1,8 +1,5 @@
-import type { SessionGoalOperation } from "./goals-operations.types.js";
-import type {
-  SqliteExpectedSessionTranscriptTurnResult,
-  SqliteSessionTurnOptions,
-} from "./session-turn.types.js";
+import type { SessionSourcePredicateFacts } from "./session-source-authority.js";
+import type { SqliteExpectedSessionTranscriptTurnResult } from "./session-turn.types.js";
 
 export type SessionColdMutationResult = {
   archivedTranscripts: number;
@@ -10,20 +7,5 @@ export type SessionColdMutationResult = {
   restored: boolean;
   sessionKey?: string;
   turnRebound?: SqliteExpectedSessionTranscriptTurnResult;
-};
-export type SessionColdTurnGuard = {
-  agentId: string;
-  sessionKey: string;
-  options: Pick<
-    SqliteSessionTurnOptions,
-    | "keyFormat"
-    | "expectedSessionId"
-    | "selectedSessionId"
-    | "selectedLifecycleRevision"
-    | "expectedLifecycleRevision"
-    | "expectedWriterRunId"
-    | "expectedSessionState"
-    | "initialSessionEntry"
-  >;
-  goalOperation?: SessionGoalOperation;
+  refusedSource?: { index: number; facts: SessionSourcePredicateFacts };
 };

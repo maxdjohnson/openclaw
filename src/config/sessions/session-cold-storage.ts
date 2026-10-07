@@ -46,6 +46,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
+import type { SessionColdTurnGuard } from "./session-cold-storage-guard.types.js";
 import type { SessionColdReadPreparation } from "./session-cold-storage-read.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import type {
@@ -54,10 +55,7 @@ import type {
   SessionColdPreparationWorkerData,
   SessionColdWorkerData,
 } from "./session-cold-storage-worker.js";
-import type {
-  SessionColdMutationResult,
-  SessionColdTurnGuard,
-} from "./session-cold-storage.types.js";
+import type { SessionColdMutationResult } from "./session-cold-storage.types.js";
 import { reclaimSqliteFreePages } from "./session-history-archive-pruning.js";
 import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 import { prepareSessionStoreTargetInventory } from "./session-store-target-inventory.js";
@@ -376,6 +374,13 @@ export class SessionColdTurnReboundError extends Error {
   }
 }
 
+export class SessionColdSourceReboundError extends Error {
+  constructor(readonly refusal: NonNullable<SessionColdMutationResult["refusedSource"]>) {
+    super("Session source changed before cold transcript restoration");
+    this.name = "SessionColdSourceReboundError";
+  }
+}
+
 export async function restoreSessionColdTranscript(
   scope: SessionTranscriptReadScope,
   assertCurrent?: () => void,
@@ -504,6 +509,9 @@ export async function restoreSessionColdTranscript(
     );
     if (result.turnRebound) {
       throw new SessionColdTurnReboundError(result.turnRebound);
+    }
+    if (result.refusedSource) {
+      throw new SessionColdSourceReboundError(result.refusedSource);
     }
     assertCurrent?.();
     // Keep viewed history hot without changing canonical transcript timestamps or bytes.
