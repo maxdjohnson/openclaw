@@ -84,12 +84,11 @@ export async function readPublicSessionShare(
   if (isIncognitoSessionKey(locator.sessionKey) || !listAgentIds(cfg).includes(locator.agentId)) {
     return null;
   }
-  await withReadySessionRows(
+  const initial = await withReadySessionRows(
     projection,
     () => [{ key: locator.sessionKey, agentId: locator.agentId }],
-    () => undefined,
+    () => readAuthorizedTarget(cfg, locator, projection),
   );
-  const initial = readAuthorizedTarget(cfg, locator, projection);
   if (!initial) {
     return null;
   }
@@ -108,25 +107,31 @@ export async function readPublicSessionShare(
       allowResetArchiveFallback: false,
     },
   );
-  const current = readAuthorizedTarget(cfg, locator, projection);
-  if (
-    !current ||
-    current.source.path !== initial.source.path ||
-    current.source.databaseIdentity !== initial.source.databaseIdentity ||
-    current.source.databaseBirthtime !== initial.source.databaseBirthtime
-  ) {
-    return null;
-  }
-  const title = (
-    current.target.entry.label ||
-    current.target.entry.displayName ||
-    "Shared session"
-  ).trim();
-  return {
-    title: title || "Shared session",
-    messages: history.messages,
-    totalMessages: history.totalMessages,
-    truncated: history.omittedOversized === true,
-    ...(history.olderOffset !== undefined ? { olderOffset: history.olderOffset } : {}),
-  };
+  return withReadySessionRows(
+    projection,
+    () => [{ key: locator.sessionKey, agentId: locator.agentId }],
+    () => {
+      const current = readAuthorizedTarget(cfg, locator, projection);
+      if (
+        !current ||
+        current.source.path !== initial.source.path ||
+        current.source.databaseIdentity !== initial.source.databaseIdentity ||
+        current.source.databaseBirthtime !== initial.source.databaseBirthtime
+      ) {
+        return null;
+      }
+      const title = (
+        current.target.entry.label ||
+        current.target.entry.displayName ||
+        "Shared session"
+      ).trim();
+      return {
+        title: title || "Shared session",
+        messages: history.messages,
+        totalMessages: history.totalMessages,
+        truncated: history.omittedOversized === true,
+        ...(history.olderOffset !== undefined ? { olderOffset: history.olderOffset } : {}),
+      };
+    },
+  );
 }
