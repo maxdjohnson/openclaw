@@ -94,7 +94,9 @@ function binaryDatabase(
 
 function countStorageCatalogReads(db: DatabaseSync) {
   return trackSqliteStatementExecutions(db, ["catalog"], (sql) =>
-    /^\s*SELECT name, sql\s+FROM main\.sqlite_schema\s+WHERE type = 'table'/i.test(sql)
+    /^\s*SELECT\b[\s\S]*?\bFROM main\.sqlite_schema\s+WHERE type = 'table'\s+AND name NOT LIKE 'sqlite_%'/i.test(
+      sql,
+    )
       ? "catalog"
       : null,
   );
