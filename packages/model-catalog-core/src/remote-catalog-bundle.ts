@@ -217,9 +217,6 @@ export const remoteModelCatalogBundleV2Schema = remoteModelCatalogBundleSchema
     upstreamPricing: z.record(standalonePricingKeySchema, upstreamPricingV2Schema).optional(),
     providerPricing: z.record(standalonePricingKeySchema, sourcedPricingV2Schema).optional(),
   })
-  // Ignore unknown top-level keys so later publishers can add fields without
-  // breaking this reader. Earlier releases still reject them.
-  .strip()
   .superRefine((bundle, context) => {
     const providers = new Map<string, Set<string>>();
     for (const [index, model] of bundle.models.entries()) {
