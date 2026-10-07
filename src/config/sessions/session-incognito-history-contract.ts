@@ -5,6 +5,7 @@ import type {
   SessionTranscriptCorpusOptions,
   SessionTranscriptCorpusScope,
 } from "../../../packages/memory-host-sdk/src/host/session-transcript-corpus.types.js";
+import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
 import type {
   SessionTranscriptProjectionSelection,
   SessionTranscriptProjectionSelectionResults,
@@ -36,6 +37,15 @@ import type {
   SessionTranscriptWatermark,
 } from "./session-history-read.types.js";
 import type {
+  SessionConversationBinding,
+  SessionHistorySubagentFacts,
+  SessionHistorySubagentLookup,
+} from "./session-history-types.js";
+import type {
+  MemorySessionSelectors,
+  MemorySessionTarget,
+} from "./session-memory-targets.types.js";
+import type {
   PendingInputHistoryQuery,
   PendingInputHistorySnapshot,
 } from "./session-pending-input-history.types.js";
@@ -65,6 +75,7 @@ export type IncognitoHistoryTarget = {
   sessionId: string;
   lifecycleRevision?: string;
   admission?: UserTurnTranscriptAdmissionReceipt;
+  allowMissing?: true;
 };
 
 export type IncognitoContextReadResult<Value> =
@@ -84,6 +95,17 @@ type Reads = {
   "visible-delta": {
     input: { limits: SessionTranscriptVisibleMessageDeltaLimits };
     output: SessionTranscriptVisibleMessageDeltaResult;
+  };
+  "conversation-binding": {
+    input: { conversationRef: string };
+    output: SessionConversationBinding | null;
+  };
+  visibility: {
+    input: Pick<PreparedSessionHistoryReadTarget, "stateDatabase" | "sourceDiscovery"> & {
+      lookups: SessionHistorySubagentLookup[];
+      incognitoSources: Array<[string, boolean]>;
+    };
+    output: { facts: SessionHistorySubagentFacts; missingSources: string[] };
   };
   anchors: { input: SessionTranscriptAnchorSelection; output: SessionTranscriptAnchorFacts };
   accounting: {
@@ -189,7 +211,13 @@ export type IncognitoHistoryOperations = {
     input: IncognitoHistoryTarget & Reads[Key]["input"];
     output: Reads[Key]["output"];
   };
-} & { "session.history.search": Reads["search"] };
+} & {
+  "session.history.search": Reads["search"];
+  "session.history.memory-targets": {
+    input: { selectors: MemorySessionSelectors; sessions: IncognitoHistoryTarget[] };
+    output: MemorySessionTarget[];
+  };
+};
 
 export function isIncognitoHistoryCommand(command: {
   type: string;
@@ -200,7 +228,10 @@ export function isIncognitoHistoryCommand(command: {
 export function incognitoHistoryKeys(
   command: SqliteWorkerCommand<IncognitoHistoryOperations>,
 ): string[] {
-  if (command.type === "session.history.search") {
+  if (
+    command.type === "session.history.search" ||
+    command.type === "session.history.memory-targets"
+  ) {
     const keys = command.input.sessions.map((session) => session.sessionKey);
     if (new Set(keys).size !== keys.length) {
       throw new Error("Incognito search must retain unique selected sessions");

@@ -220,14 +220,14 @@ describe("readCodexMirroredSessionHistoryMessages", () => {
 
   it.each([
     { mutation: "rewrite", oversized: false, reason: "snapshot_invalidated" },
-    { mutation: "append", oversized: false, reason: "snapshot_invalidated" },
+    { mutation: "append", oversized: false, reason: undefined },
     { mutation: "other-session", oversized: false, reason: undefined },
     { mutation: "foreign-rewrite", oversized: false, reason: "snapshot_invalidated" },
     { mutation: "rewrite", oversized: true, reason: "snapshot_invalidated" },
-    { mutation: "append", oversized: true, reason: "snapshot_invalidated" },
+    { mutation: "append", oversized: true, reason: "field_limit" },
     { mutation: "other-session", oversized: true, reason: "field_limit" },
   ])(
-    "revalidates before reporting projection rejection ($mutation, oversized=$oversized)",
+    "revalidates the captured prefix before accepting projection ($mutation, oversized=$oversized)",
     async ({ mutation, oversized, reason }) => {
       const { marker, sessionTarget } = await writeSqliteSession();
       const { settledMessages } = settledFixture();
@@ -333,6 +333,9 @@ describe("readCodexMirroredSessionHistoryMessages", () => {
         const captured = await pending;
         if (reason === undefined) {
           expect(captured).toBeInstanceOf(CodexSettledTurnContext);
+          expect(JSON.stringify(captured?.data)).not.toContain(
+            "appended while the read was pending",
+          );
         } else {
           expect(captured).toBeUndefined();
           expect(warn).toHaveBeenCalledWith(
