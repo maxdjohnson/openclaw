@@ -5,6 +5,7 @@ import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { getPluginCache } from "./plugin-cache.js";
 import type { PluginCache } from "./plugin-cache.types.js";
+import { trackPluginNativeAdmission } from "./plugin-native-admission-progress.js";
 import {
   nativeAdmissionStateFor,
   retainNativePath,
@@ -169,6 +170,8 @@ export function createPluginNativeAdmission(
   const state = nativeAdmissionStateFor();
   const key = `${path.resolve(rootDir)}\0${entryFile ? path.resolve(entryFile) : ""}`;
   const owner = state.owners.get(path.resolve(rootDir));
+  const trackProgress = (stage: string) =>
+    trackPluginNativeAdmission(owner?.pluginId ?? rootDir, stage);
   const publishAdmission =
     owner && !state.artifactPreservingReadOnly
       ? createPluginSourceAdmissionPublisher({ stateDir: state.publicationStateDir })
@@ -242,6 +245,7 @@ export function createPluginNativeAdmission(
     previous?: PluginNativeNamespaceFact,
     retainedRoot?: string,
   ) => {
+    using _ = trackProgress("native namespace capture");
     const root = createPluginNativeCaptureRoot(
       state.captureStorage.stateDir,
       state.captureStorage.placement,
@@ -385,6 +389,7 @@ export function createPluginNativeAdmission(
     return linked.sourceIdentity;
   };
   const assertReferenceNamespaces = (references: Iterable<string> = pendingTargets) => {
+    using _ = trackProgress("native reference validation");
     for (const target of references) {
       if (!hardlinkedTargets.has(target)) {
         continue;
@@ -394,6 +399,7 @@ export function createPluginNativeAdmission(
     }
   };
   const linkHost = (selectedHost: string): void => {
+    using _ = trackProgress("native host selection");
     hostRoot = fs.realpathSync(selectedHost);
     for (const namespace of namespaces()) {
       if (namespace.referenceRoot) {
@@ -463,6 +469,7 @@ export function createPluginNativeAdmission(
     }
   };
   return {
+    trackProgress,
     prepared,
     resolvePreparedSource,
     sourceForPrepared,
@@ -585,6 +592,7 @@ export function createPluginNativeAdmission(
             return false;
           }
           try {
+            using _ = trackProgress("native namespace verification");
             return pluginNativeNamespaceIsCurrent(candidate, admittedBoundary, outputRoot);
           } catch {
             return false;
@@ -656,6 +664,7 @@ export function createPluginNativeAdmission(
       if (!pendingTargets.size) {
         return;
       }
+      using _ = trackProgress("native digest completion");
       for (const namespace of namespaces()) {
         finishPluginNativeNamespace(namespace);
       }

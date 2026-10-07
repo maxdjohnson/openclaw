@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { advancePluginNativeAdmission } from "./plugin-native-admission-progress.js";
 import {
   hashPluginSourceFile,
   isPluginSourceEntry,
@@ -8,6 +9,20 @@ import {
   pluginSourceIdentityChangedOnlyByCtime,
   pluginSourceStatIdentity,
 } from "./plugin-source-file.js";
+
+export function assertPluginSourceRootsCurrent(
+  rootDir: string,
+  sourceRoot: string,
+  entryFile: string | undefined,
+  entry: string | undefined,
+): void {
+  if (
+    fs.realpathSync(rootDir) !== sourceRoot ||
+    (entryFile && fs.realpathSync(entryFile) !== entry)
+  ) {
+    throw new Error("Plugin source root changed after capture");
+  }
+}
 
 export function readPluginSourceDirectory(source: string) {
   const entries = fs
@@ -69,5 +84,6 @@ export function verifyPluginSourceInputs(
         "Plugin source changed while preparing its reload; retry after the edit finishes.",
       );
     }
+    advancePluginNativeAdmission();
   }
 }

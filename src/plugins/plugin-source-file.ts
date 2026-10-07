@@ -11,6 +11,7 @@ import {
   readErrorCauses,
 } from "../infra/errors.js";
 import { isGitRuntimeStagingName } from "../infra/update-runtime-staging.js";
+import { advancePluginNativeAdmission } from "./plugin-native-admission-progress.js";
 
 // Git rollback trees retain links relative to their final location. Only explicit
 // dependency selection may own them; incidental plugin walks must leave them alone.
@@ -91,6 +92,7 @@ export function copyPluginSourceFile(
           : 0o600 | Number(admitted.mode & 0o100n),
         sourceHardlinks: "allow",
       });
+      advancePluginNativeAdmission();
       // The initial hash belongs to the copied descriptor; receipts still recheck its path.
       return options.hashCopiedContent
         ? {
@@ -130,6 +132,7 @@ export function linkPluginSourceFile(source: string, boundary: string, target: s
     if (linked.dev !== admitted.dev || linked.ino !== admitted.ino) {
       throw new Error("Native plugin artifact changed during admission");
     }
+    advancePluginNativeAdmission();
   });
 }
 
@@ -168,6 +171,7 @@ function hashPluginSourceDescriptor(
     const chunk = scratch.subarray(0, length);
     content?.update(chunk);
     receipt?.update(chunk);
+    advancePluginNativeAdmission();
   }
   if (position !== sizeBytes) {
     throw new Error(

@@ -21,11 +21,8 @@ import {
 } from "../plugins/plugin-cache.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { overlayPluginNativeAdmissions } from "../plugins/plugin-native-admission-state.js";
-import { captureProviderSyntheticAuthFacts } from "../plugins/provider-runtime.js";
 import type { PreparedSyntheticAuthFacts } from "../plugins/provider-synthetic-auth.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
-import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
-import { listManifestSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
 import { cloneAuthProfileStore } from "./auth-profiles/clone.js";
@@ -33,9 +30,15 @@ import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type { ModelCatalogAuthLabels } from "./model-catalog-auth-labels.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
+  runPreparedModelCatalogTask,
+  type PreparedModelCatalogAdmissionProgress,
+} from "./prepared-model-catalog-admission-watchdog.js";
+import { captureCatalogSyntheticAuth } from "./prepared-model-catalog-worker.auth.js";
+import {
   CatalogWorkerTaskPool,
   GATEWAY_CATALOG_WORKERS,
 } from "./prepared-model-catalog-worker.pool.js";
+import { PreparedModelCatalogAdmissionStalledError } from "./prepared-model-catalog.errors.js";
 import {
   setPreparedModelFullCatalogAuth,
   type PreparedModelRuntimeAuth,
@@ -49,10 +52,6 @@ import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model
 import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.facts.js";
 import { markPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import { registerPreparedModelRuntimeClose } from "./prepared-model-runtime.lifecycle.js";
-import {
-  listRegistrySyntheticAuthProviderRefs,
-  scopeSyntheticAuthProviderRefs,
-} from "./prepared-model-runtime.synthetic-auth.js";
 import type { PreparedModelRuntimeInput } from "./prepared-model-runtime.types.js";
 import type { AuthStorageData } from "./sessions/auth-storage.js";
 
@@ -76,6 +75,7 @@ export type PreparedModelCatalogWorkerInput = Readonly<{
 export type PreparedModelCatalogWorkerTask = {
   value: PreparedModelCatalogWorkerInput;
   request: PreparedModelWorkerRequest;
+  admissionProgress?: PreparedModelCatalogAdmissionProgress;
 };
 
 type PreparedModelWorkerCommand =
@@ -210,30 +210,33 @@ async function getGatewayCatalogPool(
     const signal = getPluginCacheRetirementSignal(cache);
     signal.throwIfAborted();
     const env = input.input.env;
+    let admissionStalled = false;
     const current: GatewayCatalogPool = {
       cache,
       envFingerprint: environmentFingerprint,
       borrowers: new Set(),
       recover: (error) =>
-        (current.recovery ??= (async () => {
-          const borrowers = [...current.borrowers];
-          if (!signal.aborted) {
-            for (const borrower of borrowers) {
-              borrower.notifyRecovery(error);
-            }
-          }
-          // Fence every old catalog before releasing the native slot. Recovery publishes new
-          // prepared owners; it never replays a failed request under its former source generation.
-          const stopping = borrowers.map((borrower) => borrower.stop(error));
-          await current.close(error);
-          await Promise.all(stopping);
-          if (gatewayCatalog.current === current) {
-            gatewayCatalog.current = undefined;
-          }
-          const { recoverPreparedModelRuntimeCatalogWorker } =
-            await import("./prepared-model-runtime.js");
-          await recoverPreparedModelRuntimeCatalogWorker(borrowers);
-        })()),
+        admissionStalled
+          ? Promise.resolve()
+          : (current.recovery ??= (async () => {
+              const borrowers = [...current.borrowers];
+              if (!signal.aborted) {
+                for (const borrower of borrowers) {
+                  borrower.notifyRecovery(error);
+                }
+              }
+              // Fence every old catalog before releasing the native slot. Recovery publishes new
+              // prepared owners; it never replays a failed request under its former source generation.
+              const stopping = borrowers.map((borrower) => borrower.stop(error));
+              await current.close(error);
+              await Promise.all(stopping);
+              if (gatewayCatalog.current === current) {
+                gatewayCatalog.current = undefined;
+              }
+              const { recoverPreparedModelRuntimeCatalogWorker } =
+                await import("./prepared-model-runtime.js");
+              await recoverPreparedModelRuntimeCatalogWorker(borrowers);
+            })()),
       close: async (error) => {
         current.closing = true;
         signal.removeEventListener("abort", retire);
@@ -254,10 +257,21 @@ async function getGatewayCatalogPool(
           // Only the pool itself closes without its owner: its worker failed, exited or timed out.
           // Record it now, once per pool; an idle worker's exit has no request to report it.
           if (!current.closing && !signal.aborted) {
+            admissionStalled = error instanceof PreparedModelCatalogAdmissionStalledError;
             gatewayCatalog.workerFailures = (gatewayCatalog.workerFailures ?? 0) + 1;
+            const recovery =
+              error instanceof PreparedModelCatalogAdmissionStalledError
+                ? "native admission will not be retried automatically"
+                : `${[...current.borrowers].filter((borrower) => borrower.isCurrent()).length} agent catalog(s) will be republished on a new worker`;
             log.warn(
-              `model catalog worker failed; ${[...current.borrowers].filter((borrower) => borrower.isCurrent()).length} agent catalog(s) will be republished on a new worker (failure ${gatewayCatalog.workerFailures} since start): ${formatErrorMessage(error)}`,
+              `model catalog worker failed; ${recovery} (failure ${gatewayCatalog.workerFailures} since start): ${formatErrorMessage(error)}`,
             );
+            if (error instanceof PreparedModelCatalogAdmissionStalledError) {
+              // Publish the failure while the pool still owns native termination and cleanup.
+              for (const borrower of current.borrowers) {
+                borrower.notifyRecovery(error);
+              }
+            }
           }
         },
       ),
@@ -566,35 +580,14 @@ export function createPreparedModelCatalogWorker(
         }
       }
       const { input } = workerInput;
-      // Worker reconstruction consumes startup auth facts even for a scoped catalog request.
-      const providerScope = [...workerInput.providerIds, ...(command.providerIds ?? [])];
-      const capture = withPluginRuntimeGenerationScope(
-        { metadataSnapshot, pluginRegistry: params.pluginRegistry },
-        () =>
-          captureProviderSyntheticAuthFacts({
-            config: input.config,
-            env: input.env,
-            workspaceDir: input.workspaceDir,
-            providerRefs:
-              command.kind === "catalog" && !command.providerIds
-                ? [
-                    ...listManifestSyntheticAuthProviderRefs(metadataSnapshot.index),
-                    // Full discovery also runs credential-only providers, whose runtime hooks can
-                    // answer for refs no manifest declares (such as the provider's own id). The
-                    // closed worker cannot probe those refs, so capture them here.
-                    ...listRegistrySyntheticAuthProviderRefs(params.pluginRegistry),
-                    ...workerInput.providerIds,
-                  ]
-                : [
-                    ...providerScope,
-                    ...scopeSyntheticAuthProviderRefs(
-                      listManifestSyntheticAuthProviderRefs(metadataSnapshot.index),
-                      providerScope,
-                    ),
-                  ],
-            signal: controller.signal,
-          }),
-      );
+      const capture = captureCatalogSyntheticAuth({
+        workerInput,
+        metadataSnapshot,
+        pluginRegistry: params.pluginRegistry,
+        providerIds: command.providerIds,
+        fullCatalog: command.kind === "catalog" && !command.providerIds,
+        signal: controller.signal,
+      });
       captures.set(controller, capture);
       let syntheticAuth: PreparedSyntheticAuthFacts;
       try {
@@ -613,7 +606,8 @@ export function createPreparedModelCatalogWorker(
       }
       requestPool = pool =
         shared?.pool ?? pool ?? createCatalogPool(workerInput.input.env, validate);
-      pending = requestPool.run(
+      pending = runPreparedModelCatalogTask(
+        requestPool,
         () => {
           assertCurrent();
           clearTimeout(timeout);
@@ -630,11 +624,8 @@ export function createPreparedModelCatalogWorker(
         },
         {
           signal: controller.signal,
-          onRequest: async () => ({
-            // A retired borrower must not turn admission into a shared worker failure.
-            input: !stoppedError && params.isCurrent(),
-            timeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
-          }),
+          isCurrent: () => !stoppedError && params.isCurrent(),
+          timeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
         },
       );
       tasks.set(pending, task);
@@ -642,6 +633,10 @@ export function createPreparedModelCatalogWorker(
       assertCurrent();
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
+      if (failure instanceof PreparedModelCatalogAdmissionStalledError) {
+        // The closed pool retains this failure; keep the publication live to record it.
+        throw failure;
+      }
       if (failure instanceof WorkerTaskError && failure.code === "overloaded") {
         // Admission pressure rejects this request without retiring the prepared generation.
         throw failure;

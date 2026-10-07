@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
+import { advancePluginNativeAdmission } from "./plugin-native-admission-progress.js";
 import {
   pluginNativeNamespaceBoundary,
   pluginNativeNamespaceMemberPath,
@@ -154,6 +155,7 @@ function assertPluginNativeReferenceDirectory(
       }
     }
     admittedMembers.add(memberKey);
+    advancePluginNativeAdmission();
   }
 }
 

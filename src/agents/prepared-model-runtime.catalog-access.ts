@@ -10,6 +10,7 @@ import {
 import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-provider-normalizer.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { createPreparedModelCatalogWorker } from "./prepared-model-catalog-worker.js";
+import { PreparedModelCatalogAdmissionStalledError } from "./prepared-model-catalog.errors.js";
 import {
   getPreparedModelFullCatalogAuth,
   hasSamePreparedModelCatalogAuth,
@@ -36,6 +37,7 @@ import {
 } from "./prepared-model-runtime.facts.js";
 import {
   type PreparedModelRuntimeCatalogAccess,
+  clearPreparedProviderCatalogExpiries,
   filterNativeModelCatalogScopes,
   filterPreparedProviderCatalog,
   mergePreparedModelCatalogInventory,
@@ -131,18 +133,9 @@ export async function createFullModelCatalogAccess(
     params.isCurrent,
     () => {
       if (published.inventory) {
-        const providers = new Map(published.inventory.providers);
-        // Failed renewal retains rows, but must not retain a successful discovery deadline.
-        for (const provider of pending?.providers ?? providers.keys()) {
-          const facts = providers.get(provider);
-          if (facts) {
-            const { expiresAt: _expiresAt, ...retained } = facts;
-            providers.set(provider, retained);
-          }
-        }
         published = {
           ...published,
-          inventory: { ...published.inventory, providers },
+          inventory: clearPreparedProviderCatalogExpiries(published.inventory, pending?.providers),
         };
         params.inventoryOwner.catalogInventory = published.inventory;
       }
@@ -330,18 +323,20 @@ export async function createFullModelCatalogAccess(
   ): Promise<CatalogCandidate> =>
     limitFullModelCatalogBuild(async () => {
       assertCurrent();
+      const hasRetainedProvider = (providerIds ?? providers).some((provider) =>
+        published.inventory?.providers.has(provider),
+      );
       const {
         modelCatalog: workerCatalog,
         configuredRuntimeModels,
         runtimeModels,
         providerExpiries,
         hookRows,
-      } = await worker.loadCatalog(
-        providerIds,
-        (providerIds ?? providers).some((provider) => published.inventory?.providers.has(provider))
-          ? (error) => attempt.failed(error, providerIds ?? providers, "provider")
-          : undefined,
-      );
+      } = await worker.loadCatalog(providerIds, (error) => {
+        if (hasRetainedProvider || error instanceof PreparedModelCatalogAdmissionStalledError) {
+          attempt.failed(error, providerIds ?? providers, "provider");
+        }
+      });
       assertCurrent();
       const scope = new Set(
         (

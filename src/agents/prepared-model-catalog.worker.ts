@@ -48,6 +48,7 @@ import { createPreparedModelCatalogProviderNormalizer } from "./model-catalog-pr
 import { resolveImplicitProviderDiscoveryScope } from "./models-config.providers.discovery-scope.js";
 import { prepareImplicitProviderStaticCatalog } from "./models-config.providers.implicit.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
+import { observePreparedModelCatalogAdmission } from "./prepared-model-catalog-admission-watchdog.js";
 import {
   PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
   fingerprintPreparedModelCatalogGeneration,
@@ -575,62 +576,67 @@ if (parentPort) {
   >();
   serveWorkerTasks(async (input, channel) => {
     // SAFETY: The typed catalog host is the sole producer of this private task envelope.
-    const { value, request } = input as PreparedModelCatalogWorkerTask;
+    const { value, request, admissionProgress } = input as PreparedModelCatalogWorkerTask;
     if (!isRecord(value) || !isWorkerRequest(request)) {
       throw new Error("invalid prepared model catalog worker request");
     }
-    return withRemoteModelCatalogSnapshot(freezeJsonSnapshot(value.remoteCatalog), () =>
-      withPluginSourceCaptureDirectory(
-        data.sourceCaptureDirectory,
-        async () => {
-          const workspaceDir =
-            value.pluginMetadataSnapshot.workspaceDir ?? value.input.workspaceDir;
-          let previous = contexts.get(workspaceDir);
-          const fingerprint = fingerprintPreparedModelCatalogPluginContext(value);
-          let attempted: WorkerGeneration | undefined;
-          try {
-            const work = new AsyncWorkScope();
-            const result = await withWorkerAuthProfileWrites(value.input.env, work, () =>
-              withClawInstallSchemaVersionFacts(request.clawInstallSchemaVersions, () =>
-                work.run(() =>
-                  runCatalogRequest(
-                    value,
-                    request,
-                    work,
-                    async () => {
-                      if (previous?.fingerprint === fingerprint) {
-                        return previous.prepared;
-                      }
-                      return (attempted = await prepareWorkerGeneration(value));
-                    },
-                    async () => {
-                      // Admission can outlast a refresh on slow filesystems; only completed
-                      // generation preparation starts the provider-discovery deadline.
-                      const response = await channel?.request(null);
-                      response?.consumed();
-                      if (response && response.input !== true) {
-                        throw new Error("prepared model catalog request retired before discovery");
-                      }
-                    },
+    return observePreparedModelCatalogAdmission(admissionProgress, (stopAdmission) =>
+      withRemoteModelCatalogSnapshot(freezeJsonSnapshot(value.remoteCatalog), () =>
+        withPluginSourceCaptureDirectory(
+          data.sourceCaptureDirectory,
+          async () => {
+            const workspaceDir =
+              value.pluginMetadataSnapshot.workspaceDir ?? value.input.workspaceDir;
+            let previous = contexts.get(workspaceDir);
+            const fingerprint = fingerprintPreparedModelCatalogPluginContext(value);
+            let attempted: WorkerGeneration | undefined;
+            try {
+              const work = new AsyncWorkScope();
+              const result = await withWorkerAuthProfileWrites(value.input.env, work, () =>
+                withClawInstallSchemaVersionFacts(request.clawInstallSchemaVersions, () =>
+                  work.run(() =>
+                    runCatalogRequest(
+                      value,
+                      request,
+                      work,
+                      async () => {
+                        if (previous?.fingerprint === fingerprint) {
+                          return previous.prepared;
+                        }
+                        return (attempted = await prepareWorkerGeneration(value));
+                      },
+                      async () => {
+                        // Admission can outlast a refresh on slow filesystems; only completed
+                        // generation preparation starts the provider-discovery deadline.
+                        const response = await channel?.request(null);
+                        response?.consumed();
+                        stopAdmission();
+                        if (response && response.input !== true) {
+                          throw new Error(
+                            "prepared model catalog request retired before discovery",
+                          );
+                        }
+                      },
+                    ),
                   ),
                 ),
-              ),
-            );
-            if (attempted && result.status === "ok") {
-              contexts.set(workspaceDir, { fingerprint, prepared: attempted });
-              attempted = undefined;
-              // Acquire the replacement before releasing shared source registrations.
-              await previous?.prepared.release();
-              // Registry custody can retain this request's async context until retirement.
-              // Drop the settled predecessor instead of retaining its callbacks through that scope.
-              previous = undefined;
+              );
+              if (attempted && result.status === "ok") {
+                contexts.set(workspaceDir, { fingerprint, prepared: attempted });
+                attempted = undefined;
+                // Acquire the replacement before releasing shared source registrations.
+                await previous?.prepared.release();
+                // Registry custody can retain this request's async context until retirement.
+                // Drop the settled predecessor instead of retaining its callbacks through that scope.
+                previous = undefined;
+              }
+              return result;
+            } finally {
+              await attempted?.release();
             }
-            return result;
-          } finally {
-            await attempted?.release();
-          }
-        },
-        data.sourceCaptureManagedRoot,
+          },
+          data.sourceCaptureManagedRoot,
+        ),
       ),
     );
   });

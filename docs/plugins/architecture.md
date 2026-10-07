@@ -478,7 +478,12 @@ agent's known configured and credential providers together; only the requested
 providers run catalog hooks. Newly observed owners extend that context without
 discarding earlier owners. Replacement releases them after admitted work settles.
 Native admission runs outside the 180-second catalog refresh deadline, so a slow
-filesystem does not repeatedly discard and recapture the same package. Parent probes
+filesystem does not repeatedly discard and recapture the same package. A parent-owned
+watchdog samples completed file, byte, and member-verification work once per second.
+Admission may continue while that counter advances; 180 seconds without progress
+closes the worker and records the stalled plugin and stage in catalog diagnostics.
+That failed inventory does not automatically retry native capture. After repairing
+the cause, reload the plugin or restart the Gateway to admit it again. Parent probes
 and queued requests remain bounded; provider discovery starts its own 180-second
 deadline after admission. Inventory retirement and shutdown still close the worker.
 After successful physical cleanup, retired plugin instances release their registry
