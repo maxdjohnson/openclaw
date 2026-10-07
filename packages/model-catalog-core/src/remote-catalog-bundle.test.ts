@@ -99,7 +99,6 @@ const invalidV2: Rejection[] = [
   [{ models: [{ ...firstModel, pricing: { ...firstModel.pricing, input: -1 } }] }, "input"],
   [validBundle],
   [{ schemaVersion: 3 }],
-  [{ pricing: {} }],
 ];
 for (const recommendedModels of [
   ["missing"],
@@ -175,6 +174,12 @@ it("preserves ordered v2 recommendations and provider-scoped model identities an
     first: { ...validBundleV2.providers.first, recommendedModels: ["other", "vendor/model"] },
   });
   expect(bundle.models.slice(0, 2)).toEqual(validBundleV2.models);
+});
+
+it("ignores unknown top-level v2 fields from newer publishers", () => {
+  expect(
+    parseRemoteModelCatalogBundleV2({ ...validBundleV2, recommendedModels: ["vendor/model"] }),
+  ).toEqual(parseRemoteModelCatalogBundleV2(validBundleV2));
 });
 
 it("preserves partial rates, context tiers, and authoritative unavailable prices", () => {
