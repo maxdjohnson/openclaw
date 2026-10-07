@@ -70,7 +70,7 @@ it.each(["absent", "admitted"] as const)(
           { sessionId: "existing-session", updatedAt: 1 },
         );
       }
-      const request = normalizeChatSendRequest({
+      const request = await normalizeChatSendRequest({
         client,
         params: {
           sessionKey: "agent:main:first-turn",
@@ -170,7 +170,7 @@ it.each([
         },
       });
     }
-    const request = normalizeChatSendRequest({
+    const request = await normalizeChatSendRequest({
       client: null,
       params: { sessionKey, message: "Continue this session.", idempotencyKey: name },
     });
@@ -229,7 +229,7 @@ it("uses fresh worker-prepared admission settings and reset timestamps without h
         cwd: "/synthetic-chat-admission",
       },
     );
-    const request = normalizeChatSendRequest({
+    const request = await normalizeChatSendRequest({
       client: null,
       params: { sessionKey, message: "Hello", idempotencyKey: runId },
     });
@@ -313,7 +313,7 @@ it("releases rejected upload reservations so corrected input can reuse its key",
         }
         return cfg;
       };
-      const blocked = normalizeChatSendRequest({
+      const blocked = await normalizeChatSendRequest({
         client: null,
         params: {
           sessionKey,
@@ -354,7 +354,7 @@ it("releases rejected upload reservations so corrected input can reuse its key",
       } finally {
         session.releaseSessionTarget();
       }
-      const corrected = normalizeChatSendRequest({
+      const corrected = await normalizeChatSendRequest({
         client: null,
         params: { sessionKey, message: "Hello", idempotencyKey: runId },
       });
@@ -408,7 +408,7 @@ it.each(["known-source", "new-terminal", "new-receipt"] as const)(
           ...(source === "known-source" ? { restartRecoveryTerminalRunIds: [runId] } : {}),
         },
       );
-      const request = normalizeChatSendRequest({
+      const request = await normalizeChatSendRequest({
         client: null,
         params: { sessionKey, message: "Hello", idempotencyKey: runId },
       });
@@ -523,7 +523,7 @@ it.each([
     const scope = { agentId: "main", sessionKey };
     const entry: SessionEntry = { sessionId: "placement-session", updatedAt: 1 };
     replaceSessionEntrySync(scope, entry);
-    const request = normalizeChatSendRequest({
+    const request = await normalizeChatSendRequest({
       client: null,
       params: { sessionKey, message: "Hello", idempotencyKey: runId },
     });

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -7,8 +8,8 @@ import {
 import { collectSqliteSchemaIssues } from "../infra/sqlite-schema-contract.js";
 import {
   getAdmittedSqliteSchemaFacts,
-  getSqliteReadScopeRevision,
-  type SqliteReadScopeRevision,
+  getSqliteReadOperationRevision,
+  type SqliteReadOperationRevision,
 } from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
@@ -23,39 +24,54 @@ import type { DB } from "./openclaw-state-db.generated.js";
 // Read-only clients need schema admission without loading updater publication policy.
 export const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 type StateSchemaVersionDatabase = Pick<DB, "config_machine_state">;
-type ContentVersionRow = Pick<DB["config_machine_state"], "value_json">;
-const contentVersionQuery = createSqliteQueryCache((db) => {
-  const query = prepareSqliteQuerySync<void, ContentVersionRow>(db, () =>
+const admittedContentVersions = new WeakMap<
+  DatabaseSync,
+  SqliteReadOperationRevision & { contentVersion: number }
+>();
+const contentVersionQuery = createSqliteQueryCache((db) =>
+  prepareSqliteQuerySync<void, Pick<DB["config_machine_state"], "value_json">>(db, () =>
     getNodeSqliteKysely<StateSchemaVersionDatabase>(db)
       .selectFrom("config_machine_state")
       .select("value_json")
       .where("state_key", "=", CONTENT_VERSION_KEY),
-  );
-  let last: { revision: SqliteReadScopeRevision; row: ContentVersionRow | undefined } | undefined;
-  return () => {
-    const revision = getSqliteReadScopeRevision(db);
-    if (revision && last?.revision === revision) {
-      return last.row;
-    }
-    const row = query().rows[0];
-    last = revision && getSqliteReadScopeRevision(db) === revision ? { revision, row } : undefined;
-    return row;
-  };
-});
+  ),
+);
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
 export function readStateSchemaContentVersion(db: DatabaseSync, published?: number): number {
   const schema = getAdmittedSqliteSchemaFacts(db);
-  return readContentVersion(db, published ?? schema?.userVersion ?? readSqliteUserVersion(db));
+  const version = published ?? schema?.userVersion ?? readSqliteUserVersion(db);
+  const revision = getSqliteReadOperationRevision(db);
+  const admitted = admittedContentVersions.get(db);
+  if (
+    revision &&
+    admitted?.schema === revision.schema &&
+    admitted.dataVersion === revision.dataVersion &&
+    admitted.mutationRevision === revision.mutationRevision
+  ) {
+    return Math.max(version, admitted.contentVersion);
+  }
+  // A caller-provided version floor belongs to this read, not the retained marker.
+  const contentVersion = readContentVersionMarker(db);
+  if (revision && getSqliteReadOperationRevision(db) === revision) {
+    if (!admitted) {
+      const unregister = registerNodeSqliteDisposeCallback(db, () => {
+        admittedContentVersions.delete(db);
+        unregister();
+      });
+    }
+    admittedContentVersions.set(db, { ...revision, contentVersion });
+  }
+  return Math.max(version, contentVersion);
 }
 
-function readContentVersion(db: DatabaseSync, published: number): number {
+function readContentVersionMarker(db: DatabaseSync): number {
   if (!tableExists(db, "config_machine_state")) {
-    return published;
+    return 0;
   }
-  const row = contentVersionQuery(db)();
+  const row = contentVersionQuery(db)().rows[0];
   if (!row) {
-    return published;
+    return 0;
   }
   let contentVersion: unknown;
   try {
@@ -75,7 +91,7 @@ function readContentVersion(db: DatabaseSync, published: number): number {
       `Invalid shared state schema content version in ${CONTENT_VERSION_KEY}.`,
     );
   }
-  return Math.max(published, contentVersion);
+  return contentVersion;
 }
 
 function stateSchema16Contract(
