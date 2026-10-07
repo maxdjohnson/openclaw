@@ -41,7 +41,8 @@ runs:
       run: |
         set -euo pipefail
         if [[ "$COMPATIBILITY_TARGET" == "true" ]]; then
-          pnpm --dir ui exec playwright install --with-deps chromium
+          # Preserve historical CI's browser-only install without adding an apt refresh.
+          pnpm --dir ui exec playwright install chromium
         elif [[ -f scripts/ensure-playwright-chromium.mts ]]; then
           node --import tsx scripts/ensure-playwright-chromium.mts --require-playwright-chromium
         else
