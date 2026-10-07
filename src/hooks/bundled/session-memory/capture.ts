@@ -21,7 +21,8 @@ export async function captureSessionMemoryTranscript(
       scope,
       (captured) => readSessionMemoryCapture({ scope: captured, messageCount }),
       async (source) => {
-        const transcript = await source.owner.readSessionMemoryCapture({
+        const reader = source.preparedReads ?? source.owner;
+        const transcript = await reader.readSessionMemoryCapture({
           scope: source.scope,
           resolved: source.resolved,
           messageCount,

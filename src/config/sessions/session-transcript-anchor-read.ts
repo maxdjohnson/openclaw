@@ -156,6 +156,7 @@ export async function readSessionTranscriptAnchorsFromSource(
   onRead?: (facts: SessionTranscriptAnchorFacts) => void,
 ): Promise<SessionTranscriptAnchorFacts> {
   const { resolved, owner, expectedIdentity } = source;
+  const reader = source.preparedReads ?? owner;
   const assertCurrent = () => {
     signal?.throwIfAborted();
     source.assertCurrent();
@@ -174,7 +175,7 @@ export async function readSessionTranscriptAnchorsFromSource(
       return { anchors: [] };
     }
     const revision = native && readSqliteNativeMutationRevision(native.db);
-    const facts = await owner.readAnchors(
+    const facts = await reader.readAnchors(
       {
         resolved: { ...resolved, sessionKey: resolved.sessionKey ?? source.scope.sessionKey },
         selection,

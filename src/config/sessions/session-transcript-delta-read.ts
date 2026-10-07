@@ -100,6 +100,7 @@ export async function withSessionTranscriptDeltaReader<T>(
           },
         }),
       async (source) => {
+        const reader = source.preparedReads ?? source.owner;
         const assertCurrent = () => {
           assertActive();
           source.assertCurrent();
@@ -112,7 +113,7 @@ export async function withSessionTranscriptDeltaReader<T>(
               target: source.resolved,
               readMetadata: async () =>
                 (
-                  await source.owner.readColdMetadata({
+                  await reader.readColdMetadata({
                     sessionId: source.resolved.sessionId,
                     env: source.scope.env,
                   })
@@ -142,14 +143,11 @@ export async function withSessionTranscriptDeltaReader<T>(
         };
         return consume({
           raw: (limits) =>
-            read(() => source.owner.readRawDelta({ ...request, limits: { ...limits } }, signal)),
+            read(() => reader.readRawDelta({ ...request, limits: { ...limits } }, signal)),
           visible: (limits) =>
             read(async () => {
               try {
-                return await source.owner.readVisibleDelta(
-                  { ...request, limits: { ...limits } },
-                  signal,
-                );
+                return await reader.readVisibleDelta({ ...request, limits: { ...limits } }, signal);
               } catch (error) {
                 if (isSessionTranscriptProjectionUnavailableError(error)) {
                   assertCurrent();
