@@ -46,7 +46,10 @@ import {
   captureScheduledCodexAppAuthority,
   resolveScheduledCodexAppCreatorCaptureDecision,
 } from "./scheduled-app-authority.js";
-import { releaseLeasedSharedCodexAppServerClient } from "./shared-client.js";
+import {
+  createIsolatedCodexAppServerClient,
+  releaseLeasedSharedCodexAppServerClient,
+} from "./shared-client.js";
 
 export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   const {
@@ -286,7 +289,11 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
         },
       });
     } finally {
-      releaseLeasedSharedCodexAppServerClient(client);
+      if (connection.attemptClientFactory === createIsolatedCodexAppServerClient) {
+        await client.closeAndWait();
+      } else {
+        releaseLeasedSharedCodexAppServerClient(client);
+      }
     }
   }
   let requireExplicitMessageTarget: boolean | undefined;
