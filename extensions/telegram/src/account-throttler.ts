@@ -10,7 +10,6 @@ import {
   waitForAbortSignal,
 } from "openclaw/plugin-sdk/runtime-env";
 import { apiThrottler } from "./bot.runtime.js";
-import { TELEGRAM_CHAT_ACTION_INTERVAL_MS } from "./chat-action-timing.js";
 import { isTelegramRateLimitError, readTelegramRetryAfterMs } from "./network-errors.js";
 import { createTelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
 
@@ -139,10 +138,9 @@ async function sleepForFloodGate(waitMs: number, signal: TelegramApiSignal): Pro
 
 function callThroughFloodGate(
   gate: TelegramFloodGate,
-  scope: TelegramRequestScope | undefined,
+  replaceable: boolean,
   prev: TelegramApiCall,
 ): TelegramApiCall {
-  const replaceable = scope?.replaceable === true;
   return async (method, payload, signal) => {
     // The ingress worker owns getUpdates flood waits (and long polls must not stall here).
     if (method === "getUpdates") {
@@ -366,7 +364,6 @@ function createTelegramAccountThrottler(
   const baseThrottler = createThrottler();
   const chatActions = createTelegramSendChatActionHandler({
     logger: (message) => logVerbose(`telegram: ${message}`),
-    minIntervalMs: TELEGRAM_CHAT_ACTION_INTERVAL_MS,
   });
   const schedulersByChat = new Map<string, GroupRequestScheduler>();
   const floodGate = new TelegramFloodGate();
@@ -422,7 +419,7 @@ function createTelegramAccountThrottler(
     const admitted = admitAtNetwork(floodGate, scope, (...args) => effect.run(() => prev(...args)));
     const send = callThroughFloodGate(
       floodGate,
-      scope,
+      replaceable,
       (queuedMethod, queuedPayload, queuedSignal) =>
         scheduleRequest(replaceable)(admitted, queuedMethod, queuedPayload, queuedSignal),
     );

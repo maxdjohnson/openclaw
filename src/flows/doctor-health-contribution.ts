@@ -7,7 +7,24 @@ import type {
 } from "./doctor-health-contribution-types.js";
 import { resolveDoctorWorkspaceDir } from "./doctor-health-contribution-utils.js";
 import type { DoctorHealthCheck } from "./health-check-runner-types.js";
-import type { HealthFinding, HealthRepairContext } from "./health-checks.js";
+import type {
+  HealthCheck,
+  HealthFinding,
+  HealthRepairContext,
+  HealthRepairEffect,
+} from "./health-checks.js";
+
+export function legacyOwnedRepair(
+  collectEffects: (ctx: HealthRepairContext) => Promise<readonly HealthRepairEffect[]>,
+  reason: string,
+): NonNullable<HealthCheck["repair"]> {
+  return async (ctx) => {
+    const effects = await collectEffects(ctx);
+    return ctx.dryRun === true
+      ? { status: "repaired", changes: [], effects }
+      : { status: "skipped", reason, changes: [], effects };
+  };
+}
 
 type DoctorContributionOptions = {
   healthCheckIds?: readonly string[];
@@ -87,7 +104,11 @@ async function runStructuredDoctorHealthContribution(params: {
     allowExecSecretRefs: params.ctx.options.allowExec === true,
     agentDatabaseRefusals: params.ctx.agentDatabaseRefusals,
   };
-  const result = await runDoctorHealthRepairs(context, { checks: params.checks, dryRun });
+  const result = await runDoctorHealthRepairs(context, {
+    checks: params.checks,
+    dryRun,
+    progress: params.ctx.options.json !== true,
+  });
   params.ctx.cfg = result.config;
   renderStructuredHealthFindings(params.ctx, result.findings);
   // Display retains original findings; finalization records only unresolved warnings.
